@@ -1,0 +1,5 @@
+/target
+
+# local backups
+*.bak
+*.bak[0-9]

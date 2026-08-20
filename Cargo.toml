@@ -1,0 +1,15 @@
+[package]
+name = "powercycling"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Power-cycle a USB device by VID:PID:serial via hub per-port power switching (PPPS)"
+repository = "https://github.com/onmcu/powercycling"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["usb", "hub", "ppps", "power-cycle", "hil"]
+categories = ["hardware-support", "os::linux-apis"]
+exclude = ["**/*.bak*"]
+
+[dependencies]
+rusb = "0.9.4"
