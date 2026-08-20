@@ -1,0 +1,44 @@
+.github/workflows/ci.yml
+  h_2e4fad1f0ddac3 1-35
+.gitignore
+  h_2e4fad1f0ddac3 1-5
+Cargo.lock
+  h_2e4fad1f0ddac3 1-72
+Cargo.toml
+  h_2e4fad1f0ddac3 1-15
+LICENSE-APACHE
+  h_2e4fad1f0ddac3 1-201
+LICENSE-MIT
+  h_2e4fad1f0ddac3 1-21
+README.md
+  h_2e4fad1f0ddac3 1-85
+examples/cycle.rs
+  h_2e4fad1f0ddac3 1-189
+src/debug.rs
+  h_2e4fad1f0ddac3 1-73
+src/device.rs
+  h_2e4fad1f0ddac3 1-61
+src/error.rs
+  h_2e4fad1f0ddac3 1-119
+src/hub.rs
+  h_2e4fad1f0ddac3 1-167
+src/lib.rs
+  h_2e4fad1f0ddac3 1-84
+src/port.rs
+  h_2e4fad1f0ddac3 1-155
+src/power.rs
+  h_2e4fad1f0ddac3 1-210
+src/sysfs.rs
+  h_2e4fad1f0ddac3 1-53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "fc15555df672eaefdecf7709bd6ad4b3cd6caf7c",
+  "prompts": {},
+  "humans": {
+    "h_2e4fad1f0ddac3": {
+      "author": "JuliDi <julian@systemscape.de>"
+    }
+  }
+}
