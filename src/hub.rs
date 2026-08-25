@@ -145,34 +145,57 @@ fn read_hub_descriptor(
     Ok((nports, per_port_power))
 }
 
-/// Every enumerated hub.
+/// Every hub enumerated on the bus, unopened.
 ///
-/// Reads cached descriptors only, opens nothing.
-pub fn all_hubs() -> rusb::Result<Vec<Device>> {
-    Ok(rusb::devices()?
-        .iter()
-        .filter(|dev| {
-            dev.device_descriptor()
-                .is_ok_and(|d| d.class_code() == LIBUSB_CLASS_HUB)
-        })
-        .collect())
-}
+/// Only [`Hubs::enumerate`] builds one, and it filters on the hub device class,
+/// so holding a `Hubs` is evidence that filter ran: nothing in it is an
+/// ordinary device.
+pub struct Hubs(Vec<Device>);
 
-/// Open the hub at `location`.
-///
-/// # Errors
-///
-/// [`Error::HubMissing`] if no hub in `hubs` sits at `location`, which means
-/// the topology moved under the search, or [`Error::HubUnreadable`] if the hub
-/// is there but will not open.
-pub fn open_hub_at(hubs: &[Device], location: &str) -> Result<Hub> {
-    let dev = hubs
-        .iter()
-        .find(|dev| device_location(dev) == location)
-        .ok_or_else(|| Error::HubMissing {
-            location: location.to_string(),
-        })?;
-    Hub::open(dev.clone())
+impl Hubs {
+    /// Enumerate every hub. Reads cached descriptors only, opens nothing.
+    ///
+    /// # Errors
+    ///
+    /// Whatever enumerating the bus returns.
+    pub fn enumerate() -> rusb::Result<Self> {
+        Ok(Self(
+            rusb::devices()?
+                .iter()
+                .filter(|dev| {
+                    dev.device_descriptor()
+                        .is_ok_and(|d| d.class_code() == LIBUSB_CLASS_HUB)
+                })
+                .collect(),
+        ))
+    }
+
+    /// Open the hub at `location`.
+    ///
+    /// `location` is a sysfs location, e.g. `2-1.2` or `usb2`, as produced by
+    /// [`sysfs_location`](crate::sysfs::sysfs_location) or
+    /// [`device_location`](crate::sysfs::device_location). 
+    ///
+    /// # Errors
+    ///
+    /// [`Error::HubMissing`] if no hub sits at `location`, which means the
+    /// topology moved under the search, or [`Error::HubUnreadable`] if the hub
+    /// is there but will not open.
+    pub fn open_at(&self, location: &str) -> Result<Hub> {
+        let dev = self
+            .0
+            .iter()
+            .find(|dev| device_location(dev) == location)
+            .ok_or_else(|| Error::HubMissing {
+                location: location.to_string(),
+            })?;
+        Hub::open(dev.clone())
+    }
+
+    /// The hubs, still unopened.
+    pub fn iter(&self) -> impl Iterator<Item = &Device> {
+        self.0.iter()
+    }
 }
 
 #[cfg(test)]

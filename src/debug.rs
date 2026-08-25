@@ -2,7 +2,7 @@
 
 use crate::device::{Device, matches_id};
 use crate::error::Result;
-use crate::hub::{Hub, all_hubs};
+use crate::hub::{Hub, Hubs};
 use crate::port::HubPort;
 use crate::power::PowerPorts;
 use crate::sysfs::{device_location, read_serial};
@@ -42,9 +42,9 @@ pub fn debug_scan(vid: u16, pid: u16, serial: Option<&str>) -> Result<()> {
     }
 
     println!("-- hubs");
-    for dev in all_hubs()? {
-        let loc = device_location(&dev);
-        match Hub::open(dev) {
+    for dev in Hubs::enumerate()?.iter() {
+        let loc = device_location(dev);
+        match Hub::open(dev.clone()) {
             Ok(hub) => println!(
                 "   {:<12} USB {}.{}  {} ports  {}",
                 hub.location,
@@ -64,7 +64,7 @@ pub fn debug_scan(vid: u16, pid: u16, serial: Option<&str>) -> Result<()> {
             match ports.held() {
                 [] => println!("   nothing held down (USB 2.0 only receptacle)"),
                 held => {
-                    let names: Vec<String> = held.iter().map(HubPort::location).collect();
+                    let names: Vec<String> = held.iter().map(HubPort::label).collect();
                     println!("   holding down {}: {}", held.len(), names.join(", "));
                 }
             }

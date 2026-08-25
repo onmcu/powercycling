@@ -29,8 +29,11 @@ impl HubPort {
     }
 
     /// Human-readable identifier, e.g. `2-1.2.3 port 4`.
+    ///
+    /// For messages only. It is not a sysfs location and no path can be built
+    /// from it; [`Self::child_location`] is the sysfs one.
     #[must_use]
-    pub fn location(&self) -> String {
+    pub fn label(&self) -> String {
         format!("{} port {}", self.hub.location, self.port)
     }
 
@@ -72,7 +75,7 @@ impl HubPort {
 
     fn switch_failed(&self, usbfs: rusb::Error, sysfs: Option<std::io::Error>) -> Error {
         Error::SwitchFailed {
-            port: self.location(),
+            port: self.label(),
             sysfs,
             usbfs,
         }
@@ -148,7 +151,7 @@ impl std::fmt::Debug for HubPort {
         write!(
             f,
             "{} ({})",
-            self.location(),
+            self.label(),
             if self.is_super_speed() { "SS" } else { "HS" }
         )
     }

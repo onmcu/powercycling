@@ -69,7 +69,7 @@ fn describe(ports: &PowerPorts) {
             "   holding down {} empty opposite-speed ports: {}",
             many.len(),
             many.iter()
-                .map(HubPort::location)
+                .map(HubPort::label)
                 .collect::<Vec<_>>()
                 .join(", ")
         ),

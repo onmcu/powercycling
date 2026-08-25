@@ -2,9 +2,9 @@
 
 use std::time::Duration;
 
-use crate::device::{Device, find_device};
+use crate::device::find_device;
 use crate::error::{Error, Result};
-use crate::hub::{Hub, USB_SS, all_hubs, open_hub_at};
+use crate::hub::{Hub, Hubs, USB_SS};
 use crate::port::{self, HubPort};
 use crate::sysfs::sysfs_location;
 
@@ -46,7 +46,7 @@ impl PowerPorts {
         let device = find_device(vid, pid, serial)?;
         let bus = device.bus_number();
         let path = device.port_numbers()?;
-        let hubs = all_hubs()?;
+        let hubs = Hubs::enumerate()?;
 
         let (hub, port) = nearest_switchable_hub(&hubs, bus, &path)?;
         let primary = HubPort::new(hub.clone(), port)?;
@@ -56,10 +56,10 @@ impl PowerPorts {
         } else if let Some((peer_loc, peer_port)) = primary.peer() {
             // The kernel named the peer: hold one port instead of a dozen, and
             // check it is switchable.
-            let peer_hub = open_hub_at(&hubs, &peer_loc)?;
+            let peer_hub = hubs.open_at(&peer_loc)?;
             if !peer_hub.per_port_power {
                 return Err(Error::PeerNotSwitchable {
-                    port: primary.location(),
+                    port: primary.label(),
                     peer: format!("{peer_loc} port {peer_port}"),
                 });
             }
@@ -155,7 +155,7 @@ impl PowerPorts {
         // Check before restoring power, while the evidence is still there.
         if !self.is_gone() {
             return Err(Error::PowerOffIneffective {
-                port: self.primary.location(),
+                port: self.primary.label(),
             });
         }
         Ok(())
@@ -168,9 +168,9 @@ impl PowerPorts {
 /// Hubs chained behind a capable one commonly report ganged switching, where
 /// clearing `PORT_POWER` disconnects the port without dropping VBUS, so the
 /// device's immediate parent is often the wrong hub.
-fn nearest_switchable_hub(hubs: &[Device], bus: u8, path: &[u8]) -> Result<(Hub, u8)> {
+fn nearest_switchable_hub(hubs: &Hubs, bus: u8, path: &[u8]) -> Result<(Hub, u8)> {
     for len in (1..=path.len()).rev() {
-        let hub = open_hub_at(hubs, &sysfs_location(bus, &path[..len - 1]))?;
+        let hub = hubs.open_at(&sysfs_location(bus, &path[..len - 1]))?;
         if hub.per_port_power {
             return Ok((hub, path[len - 1]));
         }
@@ -189,7 +189,7 @@ fn nearest_switchable_hub(hubs: &[Device], bus: u8, path: &[u8]) -> Result<(Hub,
 ///
 /// Ganged hubs are excluded: clearing `PORT_POWER` on one of their ports can
 /// take its neighbours with it.
-fn empty_opposite_speed_ports(hubs: &[Device], primary_is_super_speed: bool) -> Vec<HubPort> {
+fn empty_opposite_speed_ports(hubs: &Hubs, primary_is_super_speed: bool) -> Vec<HubPort> {
     hubs.iter()
         .filter(|dev| {
             dev.device_descriptor()
