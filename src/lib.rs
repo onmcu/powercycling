@@ -1,5 +1,5 @@
-//! Power-cycle a USB device identified by `vid:pid:serial`, by switching hub
-//! port power. Linux only.
+//! Power-cycle a USB device (VID, PID, Serial) by switching hub port power.
+//! Linux only. Only for hubs that support proper per-port power switching (PPPS).
 //!
 //! ```no_run
 //! # use std::time::Duration;
@@ -13,21 +13,36 @@
 //! # How it works
 //!
 //! [`PowerPorts::find`] walks up from the device to the nearest hub that does
-//! per-port power switching (PPPS) and cuts `PORT_POWER` on the port leading to
-//! it. Hubs chained behind a capable one commonly report ganged switching,
-//! where clearing `PORT_POWER` disconnects the port without dropping VBUS, so
-//! the device's immediate parent is often the wrong hub.
+//! per-port power switching (PPPS) and cuts `PORT_POWER` on its port. A hub
+//! without switches (_ganged_) still *accepts* `PORT_POWER` and answers it by
+//! disabling the port, so the device vanishes from the bus with VBUS untouched,
+//! i.e., a power cycle that cuts no power. Skipping those hubs is the point of
+//! the walk.
 //!
-//! A USB 3.x receptacle is one socket carrying two links, exposed as two
-//! logical hubs. A device trains only one of them, but VBUS is gated on
-//! `PORT_POWER` of *both*, so cutting the half a device sits on drops it off
-//! the bus while leaving it powered. The other half must be held down too.
+//! The switched port can be several levels above the device, so the cut takes
+//! the whole branch below it. That is, _all devices_ under the skipped hubs.
 //!
-//! That half is found without identifying the hub it belongs to. One receptacle
-//! holds one device, so the peer of an occupied port is necessarily empty;
-//! holding down every empty opposite-speed port therefore includes it, and
-//! skipping occupied ports means no other device is disturbed. Where the kernel
-//! publishes a `peer` link it names the port exactly and only one is held.
+//! ## USB 3.x Handling
+//! A USB 3.x receptacle is one physical socket carrying two USB links:
+//! a SuperSpeed hub and a USB 2.0 hub each own a port.
+//! A device connected to the physical socket occupies only one of these ports
+//! (eihter USB 2 or USB 3) and leaves the other reading empty.
+//!
+//! However, the socket only has a single VBUS pin and its two ports feed it
+//! like switches wired in parallel: if either port still has `PORT_POWER` set,
+//! the device stays powered.
+//! Cutting only the connected half (e.g., the USB 2.0 port for a USB 2.0 device)
+//! drops the device off the bus with its VBUS untouched. That is the same
+//! silent no-op as a ganged hub. **Both halves have to be down at once.**
+//!
+//! Now comes the tricky part: Which port is that other half?
+//! When the kernel publishes a `peer` link, sysfs names it outright and that
+//! one port is held.
+//! When no `peer` link is published, this crate rather "covers" that "identifies"
+//! the port with the following procedure: every *empty* port of the opposite speed
+//! is held down. The peer _must_ be among them, because the device occupies its own
+//! half of the receptacle and so leaves the other half empty.
+//! Occupied ports are skipped, so no other device is disturbed.
 //!
 //! # Requirements
 //!
