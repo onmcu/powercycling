@@ -24,7 +24,7 @@
 //!
 //! ## USB 3.x Handling
 //! A USB 3.x receptacle is one physical socket carrying two USB links:
-//! a SuperSpeed hub and a USB 2.0 hub each own a port.
+//! a `SuperSpeed` hub and a USB 2.0 hub each own a port.
 //! A device connected to the physical socket occupies only one of these ports
 //! (either USB 2 or USB 3) and leaves the other reading empty.
 //!

@@ -8,7 +8,7 @@ use crate::hub::{Hub, USB_SS, all_hubs, open_hub_at};
 use crate::port::{self, HubPort};
 use crate::sysfs::sysfs_location;
 
-/// Minimum off period when a SuperSpeed port is involved: its power-off is not
+/// Minimum off period when a `SuperSpeed` port is involved: its power-off is not
 /// immediate. Absorbed into the caller's off time rather than added to it.
 const SS_POWER_OFF_SETTLE: Duration = Duration::from_millis(200);
 
@@ -42,7 +42,7 @@ impl PowerPorts {
     /// nothing above it switches power per port, [`Error::HubUnreadable`] if a
     /// hub in the chain could not be opened, or [`Error::PeerNotSwitchable`] if
     /// the receptacle's other half is ganged.
-    pub fn find(vid: u16, pid: u16, serial: Option<&str>) -> Result<PowerPorts> {
+    pub fn find(vid: u16, pid: u16, serial: Option<&str>) -> Result<Self> {
         let device = find_device(vid, pid, serial)?;
         let bus = device.bus_number();
         let path = device.port_numbers()?;
@@ -68,7 +68,7 @@ impl PowerPorts {
             empty_opposite_speed_ports(&hubs, primary.is_super_speed())
         };
 
-        Ok(PowerPorts {
+        Ok(Self {
             primary,
             held,
             device: DeviceId {

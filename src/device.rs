@@ -17,7 +17,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// Whether a device carries this identity.
 ///
 /// When `serial` is set to none, it matches any serial number.
-pub(crate) fn matches_id(dev: &Device, vid: u16, pid: u16, serial: Option<&str>) -> bool {
+pub fn matches_id(dev: &Device, vid: u16, pid: u16, serial: Option<&str>) -> bool {
     let Ok(desc) = dev.device_descriptor() else {
         return false;
     };
@@ -27,7 +27,7 @@ pub(crate) fn matches_id(dev: &Device, vid: u16, pid: u16, serial: Option<&str>)
         && (serial.is_none_or(|s| read_serial(dev) == s))
 }
 
-pub(crate) fn find_device(vid: u16, pid: u16, serial: Option<&str>) -> Result<Device> {
+pub fn find_device(vid: u16, pid: u16, serial: Option<&str>) -> Result<Device> {
     rusb::devices()?
         .iter()
         .find(|d| matches_id(d, vid, pid, serial))

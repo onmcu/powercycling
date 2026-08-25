@@ -66,39 +66,39 @@ pub type Result<T> = std::result::Result<T, Error>;
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::NotFound { vid, pid, serial } => {
+            Self::NotFound { vid, pid, serial } => {
                 write!(f, "no device {vid:04x}:{pid:04x} with serial {serial:?}")
             }
-            Error::NoSwitchableHub { device } => write!(
+            Self::NoSwitchableHub { device } => write!(
                 f,
                 "no hub above {device} does per-port power switching (PPPS)"
             ),
-            Error::HubUnreadable { location } => write!(
+            Self::HubUnreadable { location } => write!(
                 f,
                 "hub {location} could not be opened - missing udev rule for usbfs access?"
             ),
-            Error::PeerNotSwitchable { port, peer } => write!(
+            Self::PeerNotSwitchable { port, peer } => write!(
                 f,
                 "{port} is paired with {peer}, which switches power in ganged mode; \
                  VBUS cannot be cut on this receptacle"
             ),
-            Error::SwitchFailed { port, sysfs, usbfs } => {
+            Self::SwitchFailed { port, sysfs, usbfs } => {
                 write!(f, "could not switch {port}: usbfs: {usbfs}")?;
                 match sysfs {
                     Some(e) => write!(f, "; sysfs: {e}"),
                     None => write!(f, "; sysfs: no `disable` attribute (kernel < 6.0?)"),
                 }
             }
-            Error::PowerOffIneffective { port } => write!(
+            Self::PowerOffIneffective { port } => write!(
                 f,
                 "{port} was powered off but the device is still enumerated - \
                  the hub reports per-port power switching but does not do it"
             ),
-            Error::NotBack { vid, pid, serial } => write!(
+            Self::NotBack { vid, pid, serial } => write!(
                 f,
                 "device {vid:04x}:{pid:04x} {serial:?} did not re-enumerate after power-on"
             ),
-            Error::Usb(e) => write!(f, "usb error: {e}"),
+            Self::Usb(e) => write!(f, "usb error: {e}"),
         }
     }
 }
@@ -106,7 +106,7 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::Usb(e) | Error::SwitchFailed { usbfs: e, .. } => Some(e),
+            Self::Usb(e) | Self::SwitchFailed { usbfs: e, .. } => Some(e),
             _ => None,
         }
     }
@@ -114,6 +114,6 @@ impl std::error::Error for Error {
 
 impl From<rusb::Error> for Error {
     fn from(e: rusb::Error) -> Self {
-        Error::Usb(e)
+        Self::Usb(e)
     }
 }

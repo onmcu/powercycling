@@ -25,7 +25,7 @@ pub struct HubPort {
 impl HubPort {
     pub(crate) fn new(hub: Hub, port: u8) -> Result<Self> {
         let dir = hub.port_dir(port)?;
-        Ok(HubPort { hub, port, dir })
+        Ok(Self { hub, port, dir })
     }
 
     /// Human-readable identifier, e.g. `2-1.2.3 port 4`.
@@ -34,7 +34,7 @@ impl HubPort {
         format!("{} port {}", self.hub.location, self.port)
     }
 
-    /// Whether this is the SuperSpeed half of a USB 3.x receptacle.
+    /// Whether this is the `SuperSpeed` half of a USB 3.x receptacle.
     #[must_use]
     pub fn is_super_speed(&self) -> bool {
         self.hub.is_super_speed()
@@ -44,7 +44,7 @@ impl HubPort {
     /// `2-1.2.3.4`. Everything at or below it loses power with the port.
     #[must_use]
     pub fn child_location(&self) -> String {
-        if self.hub.path.is_empty() {
+        if self.hub.is_root_hub() {
             format!("{}-{}", self.hub.bus, self.port)
         } else {
             format!("{}.{}", self.hub.location, self.port)
@@ -115,7 +115,7 @@ impl HubPort {
 /// # Errors
 ///
 /// [`Error::SwitchFailed`] for the first port that could not be switched.
-pub(crate) fn usbfs_set_power(ports: &[&HubPort], on: bool) -> Result<()> {
+pub fn usbfs_set_power(ports: &[&HubPort], on: bool) -> Result<()> {
     for group in ports.chunk_by(|a, b| a.hub.location == b.hub.location) {
         let [first, ..] = group else { continue };
         let handle = first

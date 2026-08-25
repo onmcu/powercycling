@@ -16,22 +16,26 @@ const HUB_CHAR_LPSM: u8 = 0x03;
 const HUB_CHAR_INDV_PORT_LPSM: u8 = 0x01;
 
 /// A hub declaring at least this may be the USB 2.0 half of a USB 3.x
-/// receptacle. One declaring USB 2.0 has no SuperSpeed half.
+/// receptacle. One declaring USB 2.0 has no `SuperSpeed` half.
 const USB_BOS: Version = Version(2, 1, 0);
-/// A hub declaring at least this is a SuperSpeed hub.
-pub(crate) const USB_SS: Version = Version(3, 0, 0);
+/// A hub declaring at least this is a `SuperSpeed` hub.
+pub const USB_SS: Version = Version(3, 0, 0);
 
 /// One logical hub. A USB 3.x receptacle is fed by two of these.
 #[derive(Clone)]
-pub(crate) struct Hub {
-    pub(crate) dev: Device,
+pub struct Hub {
+    /// Device on the global libusb context
+    pub dev: Device,
     /// sysfs location, e.g. `2-1.2`, or `usb2` for a root hub.
-    pub(crate) location: String,
-    pub(crate) bus: u8,
-    pub(crate) path: Vec<u8>,
-    pub(crate) version: Version,
-    pub(crate) nports: u8,
-    pub(crate) per_port_power: bool,
+    pub location: String,
+    /// Bus number this hub is connected to
+    pub bus: u8,
+    /// USB version
+    pub version: Version,
+    /// `bNbrPorts`, the number ports that this hub supports
+    pub nports: u8,
+    /// Whether the hub support PPPS
+    pub per_port_power: bool,
 }
 
 impl Hub {
@@ -39,21 +43,23 @@ impl Hub {
     ///
     /// Requires usbfs access: whether a hub switches power per port is only in
     /// the hub descriptor, not in sysfs.
-    pub(crate) fn open(dev: Device, location: &str) -> Result<Hub> {
+    pub fn open(dev: Device, location: &str) -> Result<Self> {
         let unreadable = || Error::HubUnreadable {
             location: location.to_string(),
         };
+
         let desc = dev.device_descriptor().map_err(|_| unreadable())?;
+
         // The declared spec version, not the negotiated link speed: a
         // SuperSpeed hub plugged into a USB 2.0 port is still the SS half.
         let version = desc.usb_version();
+
         let handle = dev.open().map_err(|_| unreadable())?;
         let (nports, per_port_power) =
             read_hub_descriptor(&handle, version >= USB_SS).map_err(|_| unreadable())?;
 
-        Ok(Hub {
+        Ok(Self {
             bus: dev.bus_number(),
-            path: dev.port_numbers().unwrap_or_default(),
             location: location.to_string(),
             dev,
             version,
@@ -62,12 +68,19 @@ impl Hub {
         })
     }
 
-    pub(crate) fn is_super_speed(&self) -> bool {
+    /// Whether this is the bus's root hub, i.e. nothing above it in the tree.
+    /// Its USB port path is empty, so sysfs names it `usb<bus>` instead of
+    /// `<bus>-<port path>`, which every location built from it must account for.
+    pub fn is_root_hub(&self) -> bool {
+        self.dev.port_numbers().unwrap_or_default().is_empty()
+    }
+
+    pub fn is_super_speed(&self) -> bool {
         self.version >= USB_SS
     }
 
     /// Whether this hub can be one half of a USB 3.x receptacle.
-    pub(crate) fn may_have_peer(&self) -> bool {
+    pub fn may_have_peer(&self) -> bool {
         self.version >= USB_BOS
     }
 
@@ -76,10 +89,10 @@ impl Hub {
     ///
     /// The config number comes from the cached descriptor, so this needs no
     /// usbfs handle.
-    pub(crate) fn port_dir(&self, port: u8) -> rusb::Result<PathBuf> {
+    pub fn port_dir(&self, port: u8) -> rusb::Result<PathBuf> {
         let cfg = self.dev.active_config_descriptor()?.number();
         // A root hub's interface directory is `<bus>-0:<cfg>.0`, not `usb<bus>:...`.
-        let iface = if self.path.is_empty() {
+        let iface = if self.is_root_hub() {
             format!("{}-0", self.bus)
         } else {
             self.location.clone()
@@ -125,7 +138,7 @@ fn read_hub_descriptor(
 
 /// Every enumerated hub with its sysfs location. Reads cached descriptors only,
 /// opens nothing.
-pub(crate) fn all_hubs() -> rusb::Result<Vec<(Device, String)>> {
+pub fn all_hubs() -> rusb::Result<Vec<(Device, String)>> {
     Ok(rusb::devices()?
         .iter()
         .filter(|dev| {
@@ -140,7 +153,7 @@ pub(crate) fn all_hubs() -> rusb::Result<Vec<(Device, String)>> {
 }
 
 /// Open the hub at `location`.
-pub(crate) fn open_hub_at(hubs: &[(Device, String)], location: &str) -> Result<Hub> {
+pub fn open_hub_at(hubs: &[(Device, String)], location: &str) -> Result<Hub> {
     let (dev, _) =
         hubs.iter()
             .find(|(_, l)| l == location)
