@@ -1,0 +1,26 @@
+src/device.rs
+  h_2e4fad1f0ddac3 20,30
+src/error.rs
+  h_2e4fad1f0ddac3 69,72,76,80,85,92,97,101,109,117
+src/hub.rs
+  h_2e4fad1f0ddac3 19,21-22,26-28,30-38,46,50,52,56,61,71-78,83,92,95,141,156
+src/lib.rs
+  h_2e4fad1f0ddac3 27
+src/port.rs
+  h_2e4fad1f0ddac3 28,37,47,118
+src/power.rs
+  h_2e4fad1f0ddac3 11,45,71
+src/sysfs.rs
+  h_2e4fad1f0ddac3 5,8,19,28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "c785c43f0d10b324899898c1fadff5591ec72ca9",
+  "prompts": {},
+  "humans": {
+    "h_2e4fad1f0ddac3": {
+      "author": "JuliDi <julian@systemscape.de>"
+    }
+  }
+}
