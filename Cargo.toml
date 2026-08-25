@@ -13,3 +13,12 @@ exclude = ["**/*.bak*"]
 
 [dependencies]
 rusb = "0.9.4"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "deny"
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
