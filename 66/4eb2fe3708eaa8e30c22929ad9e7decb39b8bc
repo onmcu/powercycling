@@ -1,0 +1,18 @@
+src/hub.rs
+  h_2e4fad1f0ddac3 177
+src/port.rs
+  h_2e4fad1f0ddac3 12,110,112-116,118-119,123-124,127
+src/power.rs
+  h_2e4fad1f0ddac3 13-14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "664eb2fe3708eaa8e30c22929ad9e7decb39b8bc",
+  "prompts": {},
+  "humans": {
+    "h_2e4fad1f0ddac3": {
+      "author": "JuliDi <julian@systemscape.de>"
+    }
+  }
+}
