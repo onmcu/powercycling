@@ -7,7 +7,7 @@ use rusb::{DeviceHandle, Direction, GlobalContext, Recipient, RequestType, Versi
 use std::path::PathBuf;
 
 use crate::error::{Error, Result};
-use crate::sysfs::{SYSFS_USB, sysfs_location};
+use crate::sysfs::{SYSFS_USB, device_location};
 use crate::{Device, TIMEOUT};
 
 /// Logical Power Switching Mode mask and its per-port value, from
@@ -43,9 +43,15 @@ impl Hub {
     ///
     /// Requires usbfs access: whether a hub switches power per port is only in
     /// the hub descriptor, not in sysfs.
-    pub fn open(dev: Device, location: &str) -> Result<Self> {
+    ///
+    /// # Errors
+    ///
+    /// [`Error::HubUnreadable`] if the hub could not be opened or would not
+    /// answer.
+    pub fn open(dev: Device) -> Result<Self> {
+        let location = device_location(&dev);
         let unreadable = || Error::HubUnreadable {
-            location: location.to_string(),
+            location: location.clone(),
         };
 
         let desc = dev.device_descriptor().map_err(|_| unreadable())?;
@@ -60,7 +66,7 @@ impl Hub {
 
         Ok(Self {
             bus: dev.bus_number(),
-            location: location.to_string(),
+            location,
             dev,
             version,
             nports,
@@ -74,7 +80,7 @@ impl Hub {
     pub fn is_root_hub(&self) -> bool {
         self.dev.port_numbers().unwrap_or_default().is_empty()
     }
-
+    /// Whether this is at least a USB 3 hub
     pub fn is_super_speed(&self) -> bool {
         self.version >= USB_SS
     }
@@ -129,38 +135,44 @@ fn read_hub_descriptor(
         return Err(rusb::Error::Io);
     }
 
+    // bNbrPorts is stored at offset 2 (§11.23.2.1)
     let nports = buf[2];
+    // wHubCharacteristics is stored at offset 3 (§11.23.2.1)
     let lpsm = buf[3] & HUB_CHAR_LPSM;
+
     // With one port, ganged switching and per-port switching are the same act.
     let per_port_power = lpsm == HUB_CHAR_INDV_PORT_LPSM || (lpsm == 0 && nports == 1);
     Ok((nports, per_port_power))
 }
 
-/// Every enumerated hub with its sysfs location. Reads cached descriptors only,
-/// opens nothing.
-pub fn all_hubs() -> rusb::Result<Vec<(Device, String)>> {
+/// Every enumerated hub.
+///
+/// Reads cached descriptors only, opens nothing.
+pub fn all_hubs() -> rusb::Result<Vec<Device>> {
     Ok(rusb::devices()?
         .iter()
         .filter(|dev| {
             dev.device_descriptor()
                 .is_ok_and(|d| d.class_code() == LIBUSB_CLASS_HUB)
         })
-        .map(|dev| {
-            let loc = sysfs_location(dev.bus_number(), &dev.port_numbers().unwrap_or_default());
-            (dev, loc)
-        })
         .collect())
 }
 
 /// Open the hub at `location`.
-pub fn open_hub_at(hubs: &[(Device, String)], location: &str) -> Result<Hub> {
-    let (dev, _) =
-        hubs.iter()
-            .find(|(_, l)| l == location)
-            .ok_or_else(|| Error::HubUnreadable {
-                location: location.to_string(),
-            })?;
-    Hub::open(dev.clone(), location)
+///
+/// # Errors
+///
+/// [`Error::HubMissing`] if no hub in `hubs` sits at `location`, which means
+/// the topology moved under the search, or [`Error::HubUnreadable`] if the hub
+/// is there but will not open.
+pub fn open_hub_at(hubs: &[Device], location: &str) -> Result<Hub> {
+    let dev = hubs
+        .iter()
+        .find(|dev| device_location(dev) == location)
+        .ok_or_else(|| Error::HubMissing {
+            location: location.to_string(),
+        })?;
+    Hub::open(dev.clone())
 }
 
 #[cfg(test)]

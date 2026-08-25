@@ -5,7 +5,7 @@ use crate::error::Result;
 use crate::hub::{Hub, all_hubs};
 use crate::port::HubPort;
 use crate::power::PowerPorts;
-use crate::sysfs::{read_serial, sysfs_location};
+use crate::sysfs::{device_location, read_serial};
 
 /// Print what each stage of the search sees.
 ///
@@ -29,7 +29,7 @@ pub fn debug_scan(vid: u16, pid: u16, serial: Option<&str>) -> Result<()> {
         println!("   none - not enumerated at all");
     }
     for dev in &candidates {
-        let loc = sysfs_location(dev.bus_number(), &dev.port_numbers().unwrap_or_default());
+        let loc = device_location(dev);
         let found = read_serial(dev);
         let verdict = if matches_id(dev, vid, pid, serial) {
             "<= MATCH"
@@ -42,8 +42,9 @@ pub fn debug_scan(vid: u16, pid: u16, serial: Option<&str>) -> Result<()> {
     }
 
     println!("-- hubs");
-    for (dev, loc) in all_hubs()? {
-        match Hub::open(dev, &loc) {
+    for dev in all_hubs()? {
+        let loc = device_location(&dev);
+        match Hub::open(dev) {
             Ok(hub) => println!(
                 "   {:<12} USB {}.{}  {} ports  {}",
                 hub.location,

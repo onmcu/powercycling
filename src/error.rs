@@ -18,6 +18,12 @@ pub enum Error {
         /// sysfs location of the device, e.g. `2-1.2.3.4`.
         device: String,
     },
+    /// No hub is enumerated at this sysfs location. The bus topology changed
+    /// during the search, or a `peer` link named a port whose hub is gone.
+    HubMissing {
+        /// sysfs location that was looked up, e.g. `2-1.2`.
+        location: String,
+    },
     /// A hub could not be opened, so whether it switches power is unknown.
     /// Usually a missing udev rule.
     HubUnreadable {
@@ -72,6 +78,10 @@ impl std::fmt::Display for Error {
             Self::NoSwitchableHub { device } => write!(
                 f,
                 "no hub above {device} does per-port power switching (PPPS)"
+            ),
+            Self::HubMissing { location } => write!(
+                f,
+                "no hub enumerated at {location} - did the bus topology change?"
             ),
             Self::HubUnreadable { location } => write!(
                 f,

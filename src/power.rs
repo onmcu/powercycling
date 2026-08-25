@@ -168,7 +168,7 @@ impl PowerPorts {
 /// Hubs chained behind a capable one commonly report ganged switching, where
 /// clearing `PORT_POWER` disconnects the port without dropping VBUS, so the
 /// device's immediate parent is often the wrong hub.
-fn nearest_switchable_hub(hubs: &[(Device, String)], bus: u8, path: &[u8]) -> Result<(Hub, u8)> {
+fn nearest_switchable_hub(hubs: &[Device], bus: u8, path: &[u8]) -> Result<(Hub, u8)> {
     for len in (1..=path.len()).rev() {
         let hub = open_hub_at(hubs, &sysfs_location(bus, &path[..len - 1]))?;
         if hub.per_port_power {
@@ -189,17 +189,14 @@ fn nearest_switchable_hub(hubs: &[(Device, String)], bus: u8, path: &[u8]) -> Re
 ///
 /// Ganged hubs are excluded: clearing `PORT_POWER` on one of their ports can
 /// take its neighbours with it.
-fn empty_opposite_speed_ports(
-    hubs: &[(Device, String)],
-    primary_is_super_speed: bool,
-) -> Vec<HubPort> {
+fn empty_opposite_speed_ports(hubs: &[Device], primary_is_super_speed: bool) -> Vec<HubPort> {
     hubs.iter()
-        .filter(|(dev, _)| {
+        .filter(|dev| {
             dev.device_descriptor()
                 .is_ok_and(|d| (d.usb_version() >= USB_SS) != primary_is_super_speed)
         })
         // A hub that cannot be opened is one that could not be switched anyway.
-        .filter_map(|(dev, loc)| Hub::open(dev.clone(), loc).ok())
+        .filter_map(|dev| Hub::open(dev.clone()).ok())
         .filter(|hub| hub.per_port_power)
         .flat_map(|hub| {
             let nports = hub.nports;
