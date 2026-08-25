@@ -10,7 +10,7 @@ pub enum Error {
         /// Product ID that was searched for.
         pid: u16,
         /// Serial that was searched for.
-        serial: String,
+        serial: Option<String>,
     },
     /// No hub between the device and the root controller does per-port power
     /// switching, so nothing can cut its VBUS.
@@ -54,7 +54,7 @@ pub enum Error {
         /// Product ID that was waited for.
         pid: u16,
         /// Serial that was waited for.
-        serial: String,
+        serial: Option<String>,
     },
     /// An enumeration or descriptor read failed.
     Usb(rusb::Error),

@@ -17,7 +17,7 @@ const SS_POWER_OFF_SETTLE: Duration = Duration::from_millis(200);
 struct DeviceId {
     vid: u16,
     pid: u16,
-    serial: String,
+    serial: Option<String>,
 }
 
 /// The ports that must be switched to cut VBUS to one device.
@@ -42,7 +42,7 @@ impl PowerPorts {
     /// nothing above it switches power per port, [`Error::HubUnreadable`] if a
     /// hub in the chain could not be opened, or [`Error::PeerNotSwitchable`] if
     /// the receptacle's other half is ganged.
-    pub fn find(vid: u16, pid: u16, serial: &str) -> Result<PowerPorts> {
+    pub fn find(vid: u16, pid: u16, serial: Option<&str>) -> Result<PowerPorts> {
         let device = find_device(vid, pid, serial)?;
         let bus = device.bus_number();
         let path = device.port_numbers()?;
@@ -74,7 +74,7 @@ impl PowerPorts {
             device: DeviceId {
                 vid,
                 pid,
-                serial: serial.to_string(),
+                serial: serial.map(String::from),
             },
         })
     }
@@ -94,7 +94,7 @@ impl PowerPorts {
     #[must_use]
     pub fn is_gone(&self) -> bool {
         let d = &self.device;
-        find_device(d.vid, d.pid, &d.serial).is_err()
+        find_device(d.vid, d.pid, d.serial.as_deref()).is_err()
     }
 
     /// Switch the held-down ports.

@@ -13,34 +13,41 @@ const OFF_TIME: Duration = Duration::from_secs(2);
 
 fn main() -> Result<(), Error> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let [vid, pid, serial, rest @ ..] = args.as_slice() else {
-        eprintln!("usage: cycle <vid-hex> <pid-hex> <serial> [--debug|--verify|--primary-only]");
+    let [vid, pid, rest @ ..] = args.as_slice() else {
+        eprintln!("usage: cycle <vid-hex> <pid-hex> [serial] [--debug|--verify|--primary-only]");
         std::process::exit(2);
     };
     let (Ok(vid), Ok(pid)) = (u16::from_str_radix(vid, 16), u16::from_str_radix(pid, 16)) else {
         eprintln!("vid and pid must be hex, e.g. 0483 374e");
         std::process::exit(2);
     };
+
+    let serial = if rest.first().is_some_and(|serial| !serial.starts_with("--")) {
+        rest.first().cloned()
+    } else {
+        None
+    };
+
     let has = |flag: &str| rest.iter().any(|a| a == flag);
 
     if has("--debug") {
-        return powercycling::debug_scan(vid, pid, serial);
+        return powercycling::debug_scan(vid, pid, serial.as_deref());
     }
     if has("--verify") {
-        return verify(vid, pid, serial);
+        return verify(vid, pid, serial.as_deref());
     }
     if has("--primary-only") {
-        return primary_only(vid, pid, serial);
+        return primary_only(vid, pid, serial.as_deref());
     }
 
     let t0 = Instant::now();
-    let ports = PowerPorts::find(vid, pid, serial)?;
+    let ports = PowerPorts::find(vid, pid, serial.as_deref())?;
     let found = t0.elapsed();
     describe(&ports);
 
     ports.cycle(OFF_TIME)?;
     let cycled = t0.elapsed();
-    let dev = powercycling::wait_for_device(vid, pid, serial, Duration::from_secs(10))?;
+    let dev = powercycling::wait_for_device(vid, pid, serial.as_deref(), Duration::from_secs(10))?;
     println!("back at {}", location(&dev));
     println!(
         "find {:?}, cycle {:?} (off {:?}), re-enumerate {:?}, total {:?}",
@@ -85,7 +92,7 @@ fn location(dev: &powercycling::Device) -> String {
 /// If the LED goes dark anyway, this hub gates VBUS on the USB 2.0 port alone
 /// and the whole hold-down mechanism is unnecessary for it. Watch the board,
 /// not the bus: it drops off USB either way.
-fn primary_only(vid: u16, pid: u16, serial: &str) -> Result<(), Error> {
+fn primary_only(vid: u16, pid: u16, serial: Option<&str>) -> Result<(), Error> {
     let ports = PowerPorts::find(vid, pid, serial)?;
     println!(
         "cutting ONLY {:?}, leaving {} port(s) powered",
@@ -124,7 +131,7 @@ fn bus_snapshot() -> BTreeSet<String> {
 /// definitely kept its power, which is exactly what "did I disturb my other
 /// boards?" asks. Proving the *target* lost VBUS rather than just its link
 /// still needs an LED or a meter.
-fn verify(vid: u16, pid: u16, serial: &str) -> Result<(), Error> {
+fn verify(vid: u16, pid: u16, serial: Option<&str>) -> Result<(), Error> {
     let t = Instant::now();
     let ports = PowerPorts::find(vid, pid, serial)?;
     println!("found ports in {:?}", t.elapsed());

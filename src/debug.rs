@@ -16,7 +16,7 @@ use crate::sysfs::{read_serial, sysfs_location};
 ///
 /// [`crate::Error::Usb`] if the bus could not be enumerated. A failing
 /// [`PowerPorts::find`] is printed, not returned.
-pub fn debug_scan(vid: u16, pid: u16, serial: &str) -> Result<()> {
+pub fn debug_scan(vid: u16, pid: u16, serial: Option<&str>) -> Result<()> {
     println!("-- devices matching {vid:04x}:{pid:04x}");
     let candidates: Vec<Device> = rusb::devices()?
         .iter()

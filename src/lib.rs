@@ -3,7 +3,7 @@
 //!
 //! ```no_run
 //! # use std::time::Duration;
-//! powercycling::power_cycle(0x0483, 0x374e, "0050003A3233511639363634", Duration::from_secs(2))?;
+//! powercycling::power_cycle(0x0483, 0x374e, Some("0050003A3233511639363634"), Duration::from_secs(2))?;
 //! # Ok::<(), powercycling::Error>(())
 //! ```
 //!
@@ -26,7 +26,7 @@
 //! A USB 3.x receptacle is one physical socket carrying two USB links:
 //! a SuperSpeed hub and a USB 2.0 hub each own a port.
 //! A device connected to the physical socket occupies only one of these ports
-//! (eihter USB 2 or USB 3) and leaves the other reading empty.
+//! (either USB 2 or USB 3) and leaves the other reading empty.
 //!
 //! However, the socket only has a single VBUS pin and its two ports feed it
 //! like switches wired in parallel: if either port still has `PORT_POWER` set,
@@ -83,16 +83,21 @@ pub use power::PowerPorts;
 /// the hub itself, so anything slower than this is a failure, not congestion.
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Find the device's ports, power-cycle them, and wait for it to come back.
+/// Find the port(s) associated with the given device, power-cycle them and wait
+/// for it to come back.
 ///
 /// The steps must happen in this order: the device cannot be looked up while
 /// its VBUS is off.
+///
+/// The device is identified by a `VID`, `PID` and `Serial` triple.
+///
+/// If `serial` is `None`, the device is only matched by `VID` and `PID`.
 ///
 /// # Errors
 ///
 /// Anything [`PowerPorts::find`], [`PowerPorts::cycle`] or [`wait_for_device`]
 /// can return.
-pub fn power_cycle(vid: u16, pid: u16, serial: &str, off_time: Duration) -> Result<Device> {
+pub fn power_cycle(vid: u16, pid: u16, serial: Option<&str>, off_time: Duration) -> Result<Device> {
     let ports = PowerPorts::find(vid, pid, serial)?;
     ports.cycle(off_time)?;
     wait_for_device(vid, pid, serial, Duration::from_secs(10))
