@@ -1,0 +1,14 @@
+src/lib.rs
+  h_2e4fad1f0ddac3 1-2,16-45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "9d6a3f79da5d1b535e615884b24cb03902c81c8d",
+  "prompts": {},
+  "humans": {
+    "h_2e4fad1f0ddac3": {
+      "author": "JuliDi <julian@systemscape.de>"
+    }
+  }
+}
