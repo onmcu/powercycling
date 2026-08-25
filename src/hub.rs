@@ -174,7 +174,7 @@ impl Hubs {
     ///
     /// `location` is a sysfs location, e.g. `2-1.2` or `usb2`, as produced by
     /// [`sysfs_location`](crate::sysfs::sysfs_location) or
-    /// [`device_location`](crate::sysfs::device_location). 
+    /// [`device_location`](crate::sysfs::device_location).
     ///
     /// # Errors
     ///

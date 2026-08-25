@@ -10,6 +10,8 @@ use crate::sysfs::sysfs_location;
 
 /// Minimum off period when a `SuperSpeed` port is involved: its power-off is not
 /// immediate. Absorbed into the caller's off time rather than added to it.
+///
+/// This duration could probably be shorter, but 200ms is conservative.
 const SS_POWER_OFF_SETTLE: Duration = Duration::from_millis(200);
 
 /// The device a [`PowerPorts`] was found for.

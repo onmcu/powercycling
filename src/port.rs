@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::hub::Hub;
 use crate::sysfs::{SYSFS_USB, split_port_dir};
 
-/// `PORT_POWER` feature selector (USB 2.0 §11.24.2).
+/// `PORT_POWER` feature selector (USB 2.0 §11.24.2, Table 11-17).
 const PORT_POWER: u16 = 8;
 
 /// One downstream port of one logical hub.
@@ -107,19 +107,24 @@ impl HubPort {
     }
 }
 
-/// Switch several ports over usbfs, opening each hub once.
+/// Switch several ports over usbfs, opening each hub only once.
 ///
-/// usbfs rather than the sysfs `disable` attribute because `disable_store()`
-/// sleeps twice the hub's power-on-good delay on every write, and one open
-/// dominates the control transfers of the four-odd ports a hub contributes.
+/// [`HubPort::set_power`] prefers the sysfs `disable` attribute; this does not.
+/// Every `disable` write sleeps twice the hub's power-on-good delay, once per
+/// port, while over usbfs a single `libusb_open` covers all of a hub's ports.
+/// Held ports are down only for the off window, so the speed is worth losing
+/// the kernel's tracking; the device's own port keeps it.
 ///
-/// `ports` must be grouped by hub, which is how [`crate::PowerPorts::find`] builds them.
+/// Ports grouped by hub share one handle, which is how [`crate::PowerPorts::find`]
+/// builds them. Ungrouped is still correct, just slower.
 ///
 /// # Errors
 ///
-/// [`Error::SwitchFailed`] for the first port that could not be switched.
+/// [`Error::SwitchFailed`] for the first port that would not switch. Earlier
+/// ports stay switched; [`crate::PowerPorts::cycle`] restores power regardless.
 pub fn usbfs_set_power(ports: &[&HubPort], on: bool) -> Result<()> {
     for group in ports.chunk_by(|a, b| a.hub.location == b.hub.location) {
+        // `chunk_by` never yields an empty chunk, so this only destructures.
         let [first, ..] = group else { continue };
         let handle = first
             .hub
