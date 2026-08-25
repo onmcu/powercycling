@@ -1,0 +1,22 @@
+src/debug.rs
+  h_2e4fad1f0ddac3 8,32,45-47
+src/error.rs
+  h_2e4fad1f0ddac3 21-26,82-85
+src/hub.rs
+  h_2e4fad1f0ddac3 10,46-52,54,69,83,138,140,142,148-151,162-175
+src/power.rs
+  h_2e4fad1f0ddac3 171,192,194,199
+src/sysfs.rs
+  h_2e4fad1f0ddac3 17-21,34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "ffbf5965c06f290df2c40523b473eb4bc049e2eb",
+  "prompts": {},
+  "humans": {
+    "h_2e4fad1f0ddac3": {
+      "author": "JuliDi <julian@systemscape.de>"
+    }
+  }
+}
