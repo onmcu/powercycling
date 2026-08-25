@@ -1,0 +1,22 @@
+examples/cycle.rs
+  h_2e4fad1f0ddac3 72
+src/debug.rs
+  h_2e4fad1f0ddac3 5,45-47,67
+src/hub.rs
+  h_2e4fad1f0ddac3 148,150-153,155-198
+src/port.rs
+  h_2e4fad1f0ddac3 32-34,36,78,154
+src/power.rs
+  h_2e4fad1f0ddac3 5,7,49,59,62,158,171,173,192
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "4f539e214462bcc94d59cd7e8bffa00400ac2d30",
+  "prompts": {},
+  "humans": {
+    "h_2e4fad1f0ddac3": {
+      "author": "JuliDi <julian@systemscape.de>"
+    }
+  }
+}
