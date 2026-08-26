@@ -1,0 +1,14 @@
+src/hub.rs
+  h_2e4fad1f0ddac3 148
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "d5e15150c9d11735e83c944b3a4e62fda50ff438",
+  "prompts": {},
+  "humans": {
+    "h_2e4fad1f0ddac3": {
+      "author": "JuliDi <julian@systemscape.de>"
+    }
+  }
+}
