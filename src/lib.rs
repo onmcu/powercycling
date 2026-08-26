@@ -1,5 +1,4 @@
 #![doc = include_str!("../README.md")]
-#![warn(missing_docs)]
 #[cfg(not(target_os = "linux"))]
 compile_error!(
     "powercycling is Linux-only: it depends on sysfs USB port devices \
@@ -16,6 +15,10 @@ mod port;
 mod power;
 mod sysfs;
 
+/// The USB library this crate is built on. [`Device`] and [`Error::Usb`] are
+/// its types, so it is re-exported to spare callers a matching dependency.
+pub use rusb;
+
 pub use debug::debug_scan;
 pub use device::{Device, DeviceId, wait_for_device};
 pub use error::{Error, Result};
@@ -27,7 +30,7 @@ pub use power::PowerPorts;
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Find the port(s) associated with the given device, power-cycle them and wait
-/// for it to come back.
+/// up to `back_timeout` for it to re-enumerate.
 ///
 /// The steps must happen in this order: the device cannot be looked up while
 /// its VBUS is off.
@@ -39,8 +42,12 @@ pub(crate) const TIMEOUT: Duration = Duration::from_secs(1);
 ///
 /// Anything [`PowerPorts::find`], [`PowerPorts::cycle`] or [`wait_for_device`]
 /// can return.
-pub fn power_cycle(device: &DeviceId, off_time: Duration) -> Result<Device> {
+pub fn power_cycle(
+    device: &DeviceId,
+    off_time: Duration,
+    back_timeout: Duration,
+) -> Result<Device> {
     let ports = PowerPorts::find(device)?;
     ports.cycle(off_time)?;
-    wait_for_device(device, Duration::from_secs(10))
+    wait_for_device(device, back_timeout)
 }

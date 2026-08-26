@@ -15,6 +15,11 @@ use crate::{Device, TIMEOUT};
 const HUB_CHAR_LPSM: u8 = 0x03;
 const HUB_CHAR_INDV_PORT_LPSM: u8 = 0x01;
 
+/// Shortest hub descriptor that can be read: the USB 2.0 one for up to seven
+/// ports (§11.23.2.1). The `SuperSpeed` one is a fixed 12 bytes (USB 3.2
+/// §10.15.2.1).
+const HUB_DESC_MIN_LEN: usize = 9;
+
 /// A hub declaring at least this may be the USB 2.0 half of a USB 3.x
 /// receptacle. One declaring USB 2.0 has no `SuperSpeed` half.
 const USB_BOS: Version = Version(2, 1, 0);
@@ -32,9 +37,9 @@ pub struct Hub {
     pub bus: u8,
     /// USB version
     pub version: Version,
-    /// `bNbrPorts`, the number ports that this hub supports
+    /// `bNbrPorts`, the number of ports this hub has
     pub nports: u8,
-    /// Whether the hub support PPPS
+    /// Whether the hub supports PPPS
     pub per_port_power: bool,
 }
 
@@ -50,19 +55,20 @@ impl Hub {
     /// answer.
     pub fn open(dev: Device) -> Result<Self> {
         let location = device_location(&dev);
-        let unreadable = || Error::HubUnreadable {
+        let unreadable = |source| Error::HubUnreadable {
             location: location.clone(),
+            source,
         };
 
-        let desc = dev.device_descriptor().map_err(|_| unreadable())?;
+        let desc = dev.device_descriptor().map_err(unreadable)?;
 
         // The declared spec version, not the negotiated link speed: a
         // SuperSpeed hub plugged into a USB 2.0 port is still the SS half.
         let version = desc.usb_version();
 
-        let handle = dev.open().map_err(|_| unreadable())?;
+        let handle = dev.open().map_err(unreadable)?;
         let (nports, per_port_power) =
-            read_hub_descriptor(&handle, version >= USB_SS).map_err(|_| unreadable())?;
+            read_hub_descriptor(&handle, version >= USB_SS).map_err(unreadable)?;
 
         Ok(Self {
             bus: dev.bus_number(),
@@ -131,18 +137,28 @@ fn read_hub_descriptor(
         &mut buf,
         TIMEOUT,
     )?;
-    if n < 9 {
-        return Err(rusb::Error::Io);
+    parse_hub_descriptor(&buf[..n]).ok_or(rusb::Error::Io)
+}
+
+/// `bNbrPorts` and whether the hub switches power per port, from the leading
+/// bytes of a hub descriptor. Both descriptor types share the layout of these
+/// fields (USB 2.0 §11.23.2.1, USB 3.2 §10.15.2.1).
+///
+/// `None` if the descriptor is too short to hold them.
+fn parse_hub_descriptor(desc: &[u8]) -> Option<(u8, bool)> {
+    if desc.len() < HUB_DESC_MIN_LEN {
+        return None;
     }
 
-    // bNbrPorts is stored at offset 2 (§11.23.2.1)
-    let nports = buf[2];
-    // wHubCharacteristics is stored at offset 3 (§11.23.2.1)
-    let lpsm = buf[3] & HUB_CHAR_LPSM;
+    // bNbrPorts is at offset 2, wHubCharacteristics at offset 3, with the
+    // Logical Power Switching Mode in its two lowest bits:
+    // 00 ganged, 01 per port, 1x reserved (no switching, USB 1.0 hubs).
+    let nports = desc[2];
+    let lpsm = desc[3] & HUB_CHAR_LPSM;
 
     // With one port, ganged switching and per-port switching are the same act.
     let per_port_power = lpsm == HUB_CHAR_INDV_PORT_LPSM || (lpsm == 0 && nports == 1);
-    Ok((nports, per_port_power))
+    Some((nports, per_port_power))
 }
 
 /// Every hub enumerated on the bus, unopened.
@@ -211,5 +227,73 @@ mod tests {
         // Declared spec version, so 3.2 still counts as SuperSpeed.
         assert!(Version(3, 0, 0) >= USB_SS);
         assert!(Version(3, 2, 0) >= USB_SS);
+    }
+
+    /// A USB 2.0 hub descriptor for `nports` ports with the given
+    /// `wHubCharacteristics` low byte, as a hub with up to seven ports sends
+    /// it: 7 fixed bytes plus one byte each of `DeviceRemovable` and
+    /// `PortPwrCtrlMask`.
+    fn usb2_desc(nports: u8, characteristics: u8) -> [u8; 9] {
+        [
+            9,
+            LIBUSB_DT_HUB,
+            nports,
+            characteristics,
+            0x00,
+            50,
+            0,
+            0x00,
+            0xff,
+        ]
+    }
+
+    #[test]
+    fn per_port_switching_is_lpsm_01() {
+        assert_eq!(parse_hub_descriptor(&usb2_desc(4, 0b01)), Some((4, true)));
+        // Other characteristics bits (overcurrent, TT think time, indicators)
+        // do not matter.
+        assert_eq!(parse_hub_descriptor(&usb2_desc(4, 0xfd)), Some((4, true)));
+    }
+
+    #[test]
+    fn ganged_and_unswitched_hubs_are_not_per_port() {
+        assert_eq!(parse_hub_descriptor(&usb2_desc(4, 0b00)), Some((4, false)));
+        assert_eq!(parse_hub_descriptor(&usb2_desc(4, 0b10)), Some((4, false)));
+        assert_eq!(parse_hub_descriptor(&usb2_desc(4, 0b11)), Some((4, false)));
+    }
+
+    #[test]
+    fn single_port_ganged_hub_counts_as_per_port() {
+        assert_eq!(parse_hub_descriptor(&usb2_desc(1, 0b00)), Some((1, true)));
+        // Only ganged: a hub without power switching still cannot switch.
+        assert_eq!(parse_hub_descriptor(&usb2_desc(1, 0b10)), Some((1, false)));
+    }
+
+    #[test]
+    fn super_speed_descriptor_has_the_same_layout() {
+        // bLength, bDescriptorType, bNbrPorts, wHubCharacteristics,
+        // bPwrOn2PwrGood, bHubContrCurrent, bHubHdrDecLat, wHubDelay,
+        // DeviceRemovable (USB 3.2 §10.15.2.1).
+        let desc = [
+            12,
+            LIBUSB_DT_SUPERSPEED_HUB,
+            4,
+            0x09,
+            0x00,
+            50,
+            0,
+            0,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+        ];
+        assert_eq!(parse_hub_descriptor(&desc), Some((4, true)));
+    }
+
+    #[test]
+    fn short_replies_are_rejected() {
+        assert_eq!(parse_hub_descriptor(&[]), None);
+        assert_eq!(parse_hub_descriptor(&usb2_desc(4, 0b01)[..8]), None);
     }
 }

@@ -5,13 +5,22 @@
 //!     cargo run --example cycle -- 0483 374e 0050003A3233511639363634 --verify
 //!     cargo run --example cycle -- 0483 374e 0050003A3233511639363634 --primary-only
 
-use powercycling::{DeviceId, Error, HubPort, PowerPorts};
+use powercycling::{DeviceId, PowerPorts};
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 const OFF_TIME: Duration = Duration::from_secs(2);
 
-fn main() -> Result<(), Error> {
+fn main() {
+    // `fn main() -> Result` would print the error with `Debug`; the messages
+    // are written for `Display` using the "thiserror" crate.
+    if let Err(e) = run() {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [vid, pid, rest @ ..] = args.as_slice() else {
         eprintln!("usage: cycle <vid-hex> <pid-hex> [serial] [--debug|--verify|--primary-only]");
@@ -32,13 +41,13 @@ fn main() -> Result<(), Error> {
     let device = DeviceId::new(vid, pid, serial.as_deref());
 
     if has("--debug") {
-        return powercycling::debug_scan(&device);
+        return Ok(powercycling::debug_scan(&device, &mut std::io::stdout())?);
     }
     if has("--verify") {
-        return verify(&device);
+        return Ok(verify(&device)?);
     }
     if has("--primary-only") {
-        return primary_only(&device);
+        return Ok(primary_only(&device)?);
     }
 
     let t0 = Instant::now();
@@ -62,7 +71,7 @@ fn main() -> Result<(), Error> {
 }
 
 fn describe(ports: &PowerPorts) {
-    println!("cutting {:?}", ports.primary);
+    println!("cutting {:?}", ports.primary());
     match ports.held() {
         [] => println!("   nothing held down (no opposite-speed port to hold)"),
         [one] => println!("   holding down {one:?} (kernel `peer` link)"),
@@ -70,7 +79,7 @@ fn describe(ports: &PowerPorts) {
             "   holding down {} ports carrying its port number: {}",
             many.len(),
             many.iter()
-                .map(HubPort::label)
+                .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -93,18 +102,18 @@ fn location(dev: &powercycling::Device) -> String {
 /// If the LED goes dark anyway, this hub gates VBUS on the USB 2.0 port alone
 /// and the whole hold-down mechanism is unnecessary for it. Watch the board,
 /// not the bus: it drops off USB either way.
-fn primary_only(device: &DeviceId) -> Result<(), Error> {
+fn primary_only(device: &DeviceId) -> powercycling::Result<()> {
     let ports = PowerPorts::find(device)?;
     println!(
         "cutting ONLY {:?}, leaving {} port(s) powered",
-        ports.primary,
+        ports.primary(),
         ports.held().len()
     );
     println!("watch the board's power LED for {OFF_TIME:?}...");
 
-    ports.primary.set_power(false)?;
+    ports.primary().set_power(false)?;
     std::thread::sleep(OFF_TIME);
-    ports.primary.set_power(true)?;
+    ports.primary().set_power(true)?;
 
     powercycling::wait_for_device(device, Duration::from_secs(10))?;
     println!("done - LED dark => VBUS is gated on this port alone");
@@ -132,14 +141,14 @@ fn bus_snapshot() -> BTreeSet<String> {
 /// definitely kept its power, which is exactly what "did I disturb my other
 /// boards?" asks. Proving the *target* lost VBUS rather than just its link
 /// still needs an LED or a meter.
-fn verify(device: &DeviceId) -> Result<(), Error> {
+fn verify(device: &DeviceId) -> powercycling::Result<()> {
     let t = Instant::now();
     let ports = PowerPorts::find(device)?;
     println!("found ports in {:?}", t.elapsed());
     describe(&ports);
 
     // Ports we hold down are empty, so nothing should vanish on their account.
-    let expected = ports.primary.child_location();
+    let expected = ports.primary().child_location();
     println!("expecting only {expected} (and anything below) to drop\n");
 
     let before = bus_snapshot();

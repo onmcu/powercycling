@@ -4,12 +4,22 @@ use crate::device::DeviceId;
 
 /// Why a power cycle could not be carried out.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     /// Nothing on the bus matches this `vid:pid:serial`.
     #[error("no device matching {device} on the bus")]
     NotFound {
         /// The identity that was searched for.
         device: DeviceId,
+    },
+    /// More than one device matches this `vid:pid:serial`, so it is unknown
+    /// which one to cut. Narrow the identity with a serial.
+    #[error("{count} devices match {device} - add a serial to pick one")]
+    Ambiguous {
+        /// The identity that was searched for.
+        device: DeviceId,
+        /// How many devices carry it.
+        count: usize,
     },
     /// No hub between the device and the root hub does per-port power
     /// switching, so nothing can cut its VBUS.
@@ -29,12 +39,15 @@ pub enum Error {
         /// sysfs location that was looked up, e.g. `2-1.2`.
         location: String,
     },
-    /// A hub could not be opened, so whether it switches power is unknown.
-    /// Usually a missing udev rule.
-    #[error("hub {location} could not be opened - missing udev rule for usbfs access?")]
+    /// A hub could not be opened or would not answer, so whether it switches
+    /// power is unknown. Access denied usually means a missing udev rule.
+    #[error("hub {location} could not be read: {source}{}", udev_hint(*.source))]
     HubUnreadable {
         /// sysfs location of the hub, e.g. `2-1.2`.
         location: String,
+        /// What failed: opening the hub, or reading its descriptors.
+        #[source]
+        source: rusb::Error,
     },
     /// The receptacle's other half switches power in ganged mode. VBUS cannot
     /// be cut here: it stays on while either half asks for it (USB 3.2 §10.1,
@@ -117,6 +130,14 @@ pub enum Error {
 /// Result alias for this crate's [`Error`].
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// The likely fix when a hub refused access, appended to the message.
+const fn udev_hint(source: rusb::Error) -> &'static str {
+    match source {
+        rusb::Error::Access => " - missing udev rule for usbfs access?",
+        _ => "",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,6 +148,13 @@ mod tests {
             port: "2-1.2 port 3".to_string(),
             sysfs,
             usbfs: rusb::Error::Access,
+        }
+    }
+
+    fn hub_unreadable(source: rusb::Error) -> Error {
+        Error::HubUnreadable {
+            location: "2-1.2".to_string(),
+            source,
         }
     }
 
@@ -144,8 +172,20 @@ mod tests {
     }
 
     #[test]
+    fn hub_unreadable_hints_at_udev_only_when_access_was_denied() {
+        let denied = hub_unreadable(rusb::Error::Access).to_string();
+        assert!(denied.starts_with("hub 2-1.2 could not be read: "));
+        assert!(denied.ends_with("missing udev rule for usbfs access?"));
+
+        let timeout = hub_unreadable(rusb::Error::Timeout).to_string();
+        assert!(timeout.contains("Operation timed out"));
+        assert!(!timeout.contains("udev"));
+    }
+
+    #[test]
     fn usb_errors_are_the_source() {
         assert!(switch_failed(None).source().is_some());
+        assert!(hub_unreadable(rusb::Error::Io).source().is_some());
         assert!(Error::from(rusb::Error::NoDevice).source().is_some());
         assert!(
             Error::PowerOffIneffective {

@@ -19,7 +19,7 @@ const SS_POWER_OFF_SETTLE: Duration = Duration::from_millis(200);
 pub struct PowerPorts {
     /// The port feeding the device, on the nearest hub above it that switches
     /// power per port.
-    pub primary: HubPort,
+    primary: HubPort,
     /// The ports held down alongside [`Self::primary`] so the receptacle's
     /// other half cannot keep VBUS alive.
     held: Vec<HubPort>,
@@ -36,8 +36,9 @@ impl PowerPorts {
     ///
     /// # Errors
     ///
-    /// [`Error::NotFound`] if no device matches, [`Error::NoSwitchableHub`] if
-    /// no hub above it switches power per port, [`Error::HubUnreadable`] if a
+    /// [`Error::NotFound`] if no device matches, [`Error::Ambiguous`] if more
+    /// than one does, [`Error::NoSwitchableHub`] if no hub above it switches
+    /// power per port, [`Error::HubUnreadable`] if a
     /// hub in the chain could not be opened, [`Error::PeerNotSwitchable`] if
     /// the receptacle's other half is ganged, or [`Error::PeerNotFound`] if it
     /// could not be identified.
@@ -67,6 +68,13 @@ impl PowerPorts {
         })
     }
 
+    /// The port feeding the device, on the nearest hub above it that switches
+    /// power per port.
+    #[must_use]
+    pub const fn primary(&self) -> &HubPort {
+        &self.primary
+    }
+
     /// The ports held down alongside [`Self::primary`] so the receptacle's
     /// other half cannot keep VBUS alive.
     ///
@@ -74,15 +82,25 @@ impl PowerPorts {
     /// opposite-speed port carrying [`Self::primary`]'s port number, which
     /// includes it (USB 3.2 §10.3.3). Empty when the receptacle has no other
     /// half.
+    ///
+    /// Without a `peer` link, empty does not prove there is no other half: a
+    /// half that switches power in ganged mode is left out rather than
+    /// reported, since it cannot be told apart from an unrelated hub. Cutting
+    /// then drops the device off the bus with VBUS still up, which
+    /// [`Self::cycle`] cannot detect (see [`Error::PowerOffIneffective`]).
+    /// Confirm once per hardware setup with an LED or a meter.
     #[must_use]
     pub fn held(&self) -> &[HubPort] {
         &self.held
     }
 
     /// Whether the device is currently absent from the bus.
+    ///
+    /// Only a completed search that found nothing counts; a bus that could not
+    /// be enumerated says nothing about the device.
     #[must_use]
     pub fn is_gone(&self) -> bool {
-        find_device(&self.device).is_err()
+        matches!(find_device(&self.device), Err(Error::NotFound { .. }))
     }
 
     /// Switch the held-down ports.
@@ -90,11 +108,17 @@ impl PowerPorts {
     /// Occupancy was sampled when the ports were found and a caller may reuse
     /// `PowerPorts` across cycles, so re-check before cutting. Restoring is
     /// unconditional: powering on a live port is a no-op.
+    ///
+    /// Cutting stops at the first failure, since the cut is already void.
+    /// Restoring tries every port regardless and reports the first failure, so
+    /// one bad port never leaves the others held down.
     fn switch_held(&self, on: bool) -> Result<()> {
-        for peer in self.held.iter().filter(|p| on || !p.is_occupied()) {
-            peer.set_power(on)?;
+        let mut ports = self.held.iter().filter(|p| on || !p.is_occupied());
+        if on {
+            ports.map(|p| p.set_power(true)).fold(Ok(()), Result::and)
+        } else {
+            ports.try_for_each(|p| p.set_power(false))
         }
-        Ok(())
     }
 
     /// Switch the device's port, holding the receptacle's other half down for
@@ -108,8 +132,10 @@ impl PowerPorts {
     pub fn set_power(&self, on: bool) -> Result<()> {
         if on {
             // Restore the primary first, then release the held-down ports.
+            // Both run whatever the other does; the first failure is reported.
             let primary = self.primary.set_power(true);
-            self.switch_held(true).and(primary)
+            let held = self.switch_held(true);
+            primary.and(held)
         } else {
             self.switch_held(false)?;
             self.primary.set_power(false)
@@ -121,8 +147,9 @@ impl PowerPorts {
     /// # Errors
     ///
     /// [`Error::PowerOffIneffective`] if the device is still enumerated after
-    /// the off period. Power is restored either way, so a failure never strands
-    /// the device or leaves ports held down.
+    /// the off period, or [`Error::SwitchFailed`] if a port would not switch.
+    /// Power is restored either way, so a failure never strands the device or
+    /// leaves ports held down.
     pub fn cycle(&self, off_time: Duration) -> Result<()> {
         let outcome = self.cut_and_wait(off_time);
         let restored = self.set_power(true);
@@ -142,7 +169,7 @@ impl PowerPorts {
         // Check before restoring power, while the evidence is still there.
         if !self.is_gone() {
             return Err(Error::PowerOffIneffective {
-                port: self.primary.label(),
+                port: self.primary.to_string(),
             });
         }
         Ok(())
@@ -211,7 +238,7 @@ fn peer_ports(hubs: &Hubs, primary: &HubPort, port: u8) -> Result<Vec<HubPort>> 
     let peer_hub = hubs.open_at(&location)?;
     if !peer_hub.per_port_power {
         return Err(Error::PeerNotSwitchable {
-            port: primary.label(),
+            port: primary.to_string(),
             peer: format!("{location} port {peer}"),
         });
     }
@@ -222,8 +249,8 @@ fn peer_ports(hubs: &Hubs, primary: &HubPort, port: u8) -> Result<Vec<HubPort>> 
     // cutting the port would strand a device.
     if peer.is_occupied() {
         return Err(Error::PeerNotFound {
-            port: primary.label(),
-            candidate: peer.label(),
+            port: primary.to_string(),
+            candidate: peer.to_string(),
         });
     }
     Ok(vec![peer])

@@ -12,7 +12,8 @@ use std::time::Duration;
 
 fn main() -> Result<(), powercycling::Error> {
     let device = DeviceId::new(0x0483, 0x374e, Some("0050003A3233511639363634"));
-    powercycling::power_cycle(&device, Duration::from_secs(2))?;
+    // Off for 2 s, then up to 10 s for the device to re-enumerate.
+    powercycling::power_cycle(&device, Duration::from_secs(2), Duration::from_secs(10))?;
     Ok(())
 }
 ```
@@ -121,9 +122,10 @@ link does not mean what this crate takes it to mean: `find` fails with
 
 ## Errors
 
-Nothing succeeds silently. `Error` distinguishes a missing device, a chain with
-no switchable hub, a hub that could not be opened, a ganged peer, an
-unidentifiable peer, and a device still enumerated after power-off.
+Nothing succeeds silently. `Error` distinguishes a missing device, an ambiguous
+identity (several devices match, and `vid:pid` without a serial picks none of
+them), a chain with no switchable hub, a hub that could not be opened, a ganged
+peer, an unidentifiable peer, and a device still enumerated after power-off.
 
 When a `SuperSpeed` port is involved, `PowerPorts::cycle` stretches the off
 period to at least 200 ms — such a port's power-off is not immediate. The

@@ -24,7 +24,9 @@ pub struct DeviceId {
     pub vid: u16,
     /// Product ID.
     pub pid: u16,
-    /// Serial number. `None` matches any serial.
+    /// Serial number. `None` matches any serial, which is only safe when one
+    /// such device is on the bus: a lookup that matches several fails with
+    /// [`Error::Ambiguous`] rather than picking one.
     pub serial: Option<String>,
 }
 
@@ -62,17 +64,26 @@ impl std::fmt::Display for DeviceId {
     }
 }
 
-/// Find the device carrying `id`.
+/// Find the one device carrying `id`.
 ///
 /// # Errors
 ///
-/// [`Error::NotFound`] if nothing on the bus matches, [`Error::Usb`] if the bus
-/// could not be enumerated.
+/// [`Error::NotFound`] if nothing on the bus matches, [`Error::Ambiguous`] if
+/// more than one device does, [`Error::Usb`] if the bus could not be
+/// enumerated.
 pub fn find_device(id: &DeviceId) -> Result<Device> {
-    rusb::devices()?
-        .iter()
-        .find(|d| id.matches(d))
-        .ok_or_else(|| Error::NotFound { device: id.clone() })
+    let devices = rusb::devices()?;
+    let mut matching = devices.iter().filter(|d| id.matches(d));
+    let first = matching
+        .next()
+        .ok_or_else(|| Error::NotFound { device: id.clone() })?;
+    match matching.count() {
+        0 => Ok(first),
+        others => Err(Error::Ambiguous {
+            device: id.clone(),
+            count: others + 1,
+        }),
+    }
 }
 
 /// Wait for a device to appear, polling until `timeout`.
@@ -88,11 +99,14 @@ pub fn find_device(id: &DeviceId) -> Result<Device> {
 /// # Errors
 ///
 /// [`Error::NotBack`] if the device did not appear before `timeout`.
+/// [`Error::Ambiguous`] and [`Error::Usb`] are passed on at once: an ambiguous
+/// identity will not resolve itself by waiting.
 pub fn wait_for_device(id: &DeviceId, timeout: Duration) -> Result<Device> {
     let deadline = Instant::now() + timeout;
     loop {
-        if let Ok(dev) = find_device(id) {
-            return Ok(dev);
+        match find_device(id) {
+            Err(Error::NotFound { .. }) => {}
+            found => return found,
         }
         if Instant::now() >= deadline {
             return Err(Error::NotBack { device: id.clone() });

@@ -28,15 +28,6 @@ impl HubPort {
         Ok(Self { hub, port, dir })
     }
 
-    /// Human-readable identifier, e.g. `2-1.2.3 port 4`.
-    ///
-    /// For messages only. It is not a sysfs location and no path can be built
-    /// from it; [`Self::child_location`] is the sysfs one.
-    #[must_use]
-    pub fn label(&self) -> String {
-        format!("{} port {}", self.hub.location, self.port)
-    }
-
     /// Whether this is the `SuperSpeed` half of a USB 3.x receptacle.
     #[must_use]
     pub fn is_super_speed(&self) -> bool {
@@ -83,7 +74,7 @@ impl HubPort {
 
     fn switch_failed(&self, usbfs: rusb::Error, sysfs: Option<std::io::Error>) -> Error {
         Error::SwitchFailed {
-            port: self.label(),
+            port: self.to_string(),
             sysfs,
             usbfs,
         }
@@ -128,12 +119,21 @@ fn write_port_power(handle: &DeviceHandle<GlobalContext>, port: u8, on: bool) ->
     Ok(())
 }
 
+/// Human-readable identifier, e.g. `2-1.2.3 port 4`.
+///
+/// For messages only. It is not a sysfs location and no path can be built
+/// from it; [`Self::child_location`] is the sysfs one.
+impl std::fmt::Display for HubPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} port {}", self.hub.location, self.port)
+    }
+}
+
 impl std::fmt::Debug for HubPort {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{} ({})",
-            self.label(),
+            "{self} ({})",
             if self.is_super_speed() { "SS" } else { "HS" }
         )
     }
