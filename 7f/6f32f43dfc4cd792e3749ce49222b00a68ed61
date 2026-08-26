@@ -1,0 +1,32 @@
+.gitignore
+  h_2e4fad1f0ddac3 6-8
+README.md
+  h_2e4fad1f0ddac3 9-10,13-17,23-33,36-60,63-78,87-93,95-120,125-126,128-140,151,162-174
+examples/cycle.rs
+  h_2e4fad1f0ddac3 8,32,35,38,41,45,51,67,70,96-97,109,135,137,155
+src/debug.rs
+  h_2e4fad1f0ddac3 3,19-20,25,34,60,65
+src/device.rs
+  h_2e4fad1f0ddac3 17,19-28,31-35,39-75,91,94,98
+src/error.rs
+  h_2e4fad1f0ddac3 3-4,10-11,13,15-18,35-38,45-56,66-76,83-84,96,114-118,129-130,132-134
+src/hub.rs
+  h_2e4fad1f0ddac3 177
+src/lib.rs
+  h_2e4fad1f0ddac3 1,20,35-36,42-43,45
+src/port.rs
+  h_2e4fad1f0ddac3 64-71
+src/power.rs
+  h_2e4fad1f0ddac3 5,8,23-24,26-27,32,40-49,52,54,56-58,60,64,66,70-71,73-76,85,89-92,94-97,158-162,164,175-191,193-233,236-243,245,252-254
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "7f6f32f43dfc4cd792e3749ce49222b00a68ed61",
+  "prompts": {},
+  "humans": {
+    "h_2e4fad1f0ddac3": {
+      "author": "JuliDi <julian@systemscape.de>"
+    }
+  }
+}
