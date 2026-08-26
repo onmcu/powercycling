@@ -145,7 +145,7 @@ fn read_hub_descriptor(
 /// fields (USB 2.0 §11.23.2.1, USB 3.2 §10.15.2.1).
 ///
 /// `None` if the descriptor is too short to hold them.
-fn parse_hub_descriptor(desc: &[u8]) -> Option<(u8, bool)> {
+const fn parse_hub_descriptor(desc: &[u8]) -> Option<(u8, bool)> {
     if desc.len() < HUB_DESC_MIN_LEN {
         return None;
     }
