@@ -1,0 +1,14 @@
+.github/workflows/ci.yml
+  h_2e4fad1f0ddac3 16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "74bcaab90256afee01094a50560a09953f1cf7a5",
+  "prompts": {},
+  "humans": {
+    "h_2e4fad1f0ddac3": {
+      "author": "JuliDi <julian@systemscape.de>"
+    }
+  }
+}
