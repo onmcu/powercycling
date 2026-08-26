@@ -1,6 +1,6 @@
 //! Troubleshooting output.
 
-use crate::device::{Device, matches_id};
+use crate::device::{Device, DeviceId};
 use crate::error::Result;
 use crate::hub::{Hub, Hubs};
 use crate::port::HubPort;
@@ -16,13 +16,13 @@ use crate::sysfs::{device_location, read_serial};
 ///
 /// [`crate::Error::Usb`] if the bus could not be enumerated. A failing
 /// [`PowerPorts::find`] is printed, not returned.
-pub fn debug_scan(vid: u16, pid: u16, serial: Option<&str>) -> Result<()> {
-    println!("-- devices matching {vid:04x}:{pid:04x}");
+pub fn debug_scan(device: &DeviceId) -> Result<()> {
+    println!("-- devices matching {:04x}:{:04x}", device.vid, device.pid);
     let candidates: Vec<Device> = rusb::devices()?
         .iter()
         .filter(|d| {
             d.device_descriptor()
-                .is_ok_and(|desc| desc.vendor_id() == vid && desc.product_id() == pid)
+                .is_ok_and(|desc| desc.vendor_id() == device.vid && desc.product_id() == device.pid)
         })
         .collect();
     if candidates.is_empty() {
@@ -31,7 +31,7 @@ pub fn debug_scan(vid: u16, pid: u16, serial: Option<&str>) -> Result<()> {
     for dev in &candidates {
         let loc = device_location(dev);
         let found = read_serial(dev);
-        let verdict = if matches_id(dev, vid, pid, serial) {
+        let verdict = if device.matches(dev) {
             "<= MATCH"
         } else if found.is_empty() {
             "(serial unreadable - permissions?)"
@@ -57,12 +57,12 @@ pub fn debug_scan(vid: u16, pid: u16, serial: Option<&str>) -> Result<()> {
         }
     }
 
-    match PowerPorts::find(vid, pid, serial) {
+    match PowerPorts::find(device) {
         Err(e) => println!("-- search failed: {e}"),
         Ok(ports) => {
             println!("-- cutting {:?}", ports.primary);
             match ports.held() {
-                [] => println!("   nothing held down (USB 2.0 only receptacle)"),
+                [] => println!("   nothing held down (no opposite-speed port to hold)"),
                 held => {
                     let names: Vec<String> = held.iter().map(HubPort::label).collect();
                     println!("   holding down {}: {}", held.len(), names.join(", "));

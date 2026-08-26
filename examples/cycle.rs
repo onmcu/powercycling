@@ -5,7 +5,7 @@
 //!     cargo run --example cycle -- 0483 374e 0050003A3233511639363634 --verify
 //!     cargo run --example cycle -- 0483 374e 0050003A3233511639363634 --primary-only
 
-use powercycling::{Error, HubPort, PowerPorts};
+use powercycling::{DeviceId, Error, HubPort, PowerPorts};
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
@@ -29,25 +29,26 @@ fn main() -> Result<(), Error> {
     };
 
     let has = |flag: &str| rest.iter().any(|a| a == flag);
+    let device = DeviceId::new(vid, pid, serial.as_deref());
 
     if has("--debug") {
-        return powercycling::debug_scan(vid, pid, serial.as_deref());
+        return powercycling::debug_scan(&device);
     }
     if has("--verify") {
-        return verify(vid, pid, serial.as_deref());
+        return verify(&device);
     }
     if has("--primary-only") {
-        return primary_only(vid, pid, serial.as_deref());
+        return primary_only(&device);
     }
 
     let t0 = Instant::now();
-    let ports = PowerPorts::find(vid, pid, serial.as_deref())?;
+    let ports = PowerPorts::find(&device)?;
     let found = t0.elapsed();
     describe(&ports);
 
     ports.cycle(OFF_TIME)?;
     let cycled = t0.elapsed();
-    let dev = powercycling::wait_for_device(vid, pid, serial.as_deref(), Duration::from_secs(10))?;
+    let dev = powercycling::wait_for_device(&device, Duration::from_secs(10))?;
     println!("back at {}", location(&dev));
     println!(
         "find {:?}, cycle {:?} (off {:?}), re-enumerate {:?}, total {:?}",
@@ -63,10 +64,10 @@ fn main() -> Result<(), Error> {
 fn describe(ports: &PowerPorts) {
     println!("cutting {:?}", ports.primary);
     match ports.held() {
-        [] => println!("   nothing held down (USB 2.0 only receptacle)"),
+        [] => println!("   nothing held down (no opposite-speed port to hold)"),
         [one] => println!("   holding down {one:?} (kernel `peer` link)"),
         many => println!(
-            "   holding down {} empty opposite-speed ports: {}",
+            "   holding down {} ports carrying its port number: {}",
             many.len(),
             many.iter()
                 .map(HubPort::label)
@@ -92,8 +93,8 @@ fn location(dev: &powercycling::Device) -> String {
 /// If the LED goes dark anyway, this hub gates VBUS on the USB 2.0 port alone
 /// and the whole hold-down mechanism is unnecessary for it. Watch the board,
 /// not the bus: it drops off USB either way.
-fn primary_only(vid: u16, pid: u16, serial: Option<&str>) -> Result<(), Error> {
-    let ports = PowerPorts::find(vid, pid, serial)?;
+fn primary_only(device: &DeviceId) -> Result<(), Error> {
+    let ports = PowerPorts::find(device)?;
     println!(
         "cutting ONLY {:?}, leaving {} port(s) powered",
         ports.primary,
@@ -105,7 +106,7 @@ fn primary_only(vid: u16, pid: u16, serial: Option<&str>) -> Result<(), Error> {
     std::thread::sleep(OFF_TIME);
     ports.primary.set_power(true)?;
 
-    powercycling::wait_for_device(vid, pid, serial, Duration::from_secs(10))?;
+    powercycling::wait_for_device(device, Duration::from_secs(10))?;
     println!("done - LED dark => VBUS is gated on this port alone");
     println!("       LED lit  => the other half kept it alive, hold-down is needed");
     Ok(())
@@ -131,9 +132,9 @@ fn bus_snapshot() -> BTreeSet<String> {
 /// definitely kept its power, which is exactly what "did I disturb my other
 /// boards?" asks. Proving the *target* lost VBUS rather than just its link
 /// still needs an LED or a meter.
-fn verify(vid: u16, pid: u16, serial: Option<&str>) -> Result<(), Error> {
+fn verify(device: &DeviceId) -> Result<(), Error> {
     let t = Instant::now();
-    let ports = PowerPorts::find(vid, pid, serial)?;
+    let ports = PowerPorts::find(device)?;
     println!("found ports in {:?}", t.elapsed());
     describe(&ports);
 
@@ -151,7 +152,7 @@ fn verify(vid: u16, pid: u16, serial: Option<&str>) -> Result<(), Error> {
     let t1 = Instant::now();
     ports.set_power(true)?;
     let restore = t1.elapsed();
-    powercycling::wait_for_device(vid, pid, serial, Duration::from_secs(10))?;
+    powercycling::wait_for_device(device, Duration::from_secs(10))?;
     std::thread::sleep(Duration::from_millis(750));
     let after = bus_snapshot();
 

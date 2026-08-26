@@ -14,28 +14,65 @@ pub type Device = rusb::Device<GlobalContext>;
 /// How often to re-check the bus while waiting for a device to appear.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// Whether a device carries this identity.
+/// The identity a device is looked up by.
 ///
-/// When `serial` is set to none, it matches any serial number.
-pub fn matches_id(dev: &Device, vid: u16, pid: u16, serial: Option<&str>) -> bool {
-    let Ok(desc) = dev.device_descriptor() else {
-        return false;
-    };
-
-    desc.vendor_id() == vid
-        && desc.product_id() == pid
-        && (serial.is_none_or(|s| read_serial(dev) == s))
+/// The serial is owned because the identity outlives the lookup:
+/// [`crate::PowerPorts`] re-checks the device once its VBUS is gone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceId {
+    /// Vendor ID.
+    pub vid: u16,
+    /// Product ID.
+    pub pid: u16,
+    /// Serial number. `None` matches any serial.
+    pub serial: Option<String>,
 }
 
-pub fn find_device(vid: u16, pid: u16, serial: Option<&str>) -> Result<Device> {
-    rusb::devices()?
-        .iter()
-        .find(|d| matches_id(d, vid, pid, serial))
-        .ok_or_else(|| Error::NotFound {
+impl DeviceId {
+    /// A device identified by `vid:pid`, optionally narrowed to one serial.
+    #[must_use]
+    pub fn new(vid: u16, pid: u16, serial: Option<&str>) -> Self {
+        Self {
             vid,
             pid,
             serial: serial.map(String::from),
-        })
+        }
+    }
+
+    /// Whether `dev` carries this identity. An unreadable descriptor matches
+    /// nothing.
+    #[must_use]
+    pub fn matches(&self, dev: &Device) -> bool {
+        let Ok(desc) = dev.device_descriptor() else {
+            return false;
+        };
+
+        desc.vendor_id() == self.vid
+            && desc.product_id() == self.pid
+            && (self.serial.as_ref()).is_none_or(|s| read_serial(dev) == *s)
+    }
+}
+
+impl std::fmt::Display for DeviceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:04x}:{:04x}", self.vid, self.pid)?;
+        self.serial
+            .as_ref()
+            .map_or(Ok(()), |serial| write!(f, ":{serial}"))
+    }
+}
+
+/// Find the device carrying `id`.
+///
+/// # Errors
+///
+/// [`Error::NotFound`] if nothing on the bus matches, [`Error::Usb`] if the bus
+/// could not be enumerated.
+pub fn find_device(id: &DeviceId) -> Result<Device> {
+    rusb::devices()?
+        .iter()
+        .find(|d| id.matches(d))
+        .ok_or_else(|| Error::NotFound { device: id.clone() })
 }
 
 /// Wait for a device to appear, polling until `timeout`.
@@ -51,23 +88,14 @@ pub fn find_device(vid: u16, pid: u16, serial: Option<&str>) -> Result<Device> {
 /// # Errors
 ///
 /// [`Error::NotBack`] if the device did not appear before `timeout`.
-pub fn wait_for_device(
-    vid: u16,
-    pid: u16,
-    serial: Option<&str>,
-    timeout: Duration,
-) -> Result<Device> {
+pub fn wait_for_device(id: &DeviceId, timeout: Duration) -> Result<Device> {
     let deadline = Instant::now() + timeout;
     loop {
-        if let Ok(dev) = find_device(vid, pid, serial) {
+        if let Ok(dev) = find_device(id) {
             return Ok(dev);
         }
         if Instant::now() >= deadline {
-            return Err(Error::NotBack {
-                vid,
-                pid,
-                serial: serial.map(String::from),
-            });
+            return Err(Error::NotBack { device: id.clone() });
         }
         std::thread::sleep(POLL_INTERVAL);
     }

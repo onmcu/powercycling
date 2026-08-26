@@ -3,3 +3,6 @@
 # local backups
 *.bak
 *.bak[0-9]
+
+# PDF files used for referencing
+*.pdf

@@ -61,6 +61,14 @@ impl HubPort {
 
     /// The other logical port of the same receptacle, if the kernel published a
     /// `peer` link for it.
+    ///
+    /// The peer's hub location and its port on that hub - `("usb4", 1)`,
+    /// `("2-1.2", 3)` - as [`Hubs::open_at`](crate::hub::Hubs::open_at) and
+    /// [`Self::new`] take them, not the port directory the link names
+    /// (`usb4-port1`).
+    ///
+    /// `None` means the peer is unknown, not absent: no link, or an unreadable
+    /// one.
     pub(crate) fn peer(&self) -> Option<(String, u8)> {
         let target = std::fs::read_link(self.dir.join("peer")).ok()?;
         let (loc, port) = split_port_dir(target.file_name()?.to_str()?)?;
@@ -105,37 +113,6 @@ impl HubPort {
             .and_then(|handle| write_port_power(&handle, self.port, on))
             .map_err(|usbfs| self.switch_failed(usbfs, sysfs_err))
     }
-}
-
-/// Switch several ports over usbfs, opening each hub only once.
-///
-/// [`HubPort::set_power`] prefers the sysfs `disable` attribute; this does not.
-/// Every `disable` write sleeps twice the hub's power-on-good delay, once per
-/// port, while over usbfs a single `libusb_open` covers all of a hub's ports.
-/// Held ports are down only for the off window, so the speed is worth losing
-/// the kernel's tracking; the device's own port keeps it.
-///
-/// Ports grouped by hub share one handle, which is how [`crate::PowerPorts::find`]
-/// builds them. Ungrouped is still correct, just slower.
-///
-/// # Errors
-///
-/// [`Error::SwitchFailed`] for the first port that would not switch. Earlier
-/// ports stay switched; [`crate::PowerPorts::cycle`] restores power regardless.
-pub fn usbfs_set_power(ports: &[&HubPort], on: bool) -> Result<()> {
-    for group in ports.chunk_by(|a, b| a.hub.location == b.hub.location) {
-        // `chunk_by` never yields an empty chunk, so this only destructures.
-        let [first, ..] = group else { continue };
-        let handle = first
-            .hub
-            .dev
-            .open()
-            .map_err(|e| first.switch_failed(e, None))?;
-        for p in group {
-            write_port_power(&handle, p.port, on).map_err(|e| p.switch_failed(e, None))?;
-        }
-    }
-    Ok(())
 }
 
 /// Send `SetPortFeature`/`ClearPortFeature(PORT_POWER)` for one port.
