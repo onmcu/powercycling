@@ -41,6 +41,22 @@ impl DeviceId {
         }
     }
 
+    /// The identity `dev` carries: its `vid:pid`, narrowed to its serial where
+    /// sysfs publishes one.
+    ///
+    /// # Errors
+    ///
+    /// [`rusb::Error`] if the device descriptor could not be read.
+    pub fn of(dev: &Device) -> rusb::Result<Self> {
+        let desc = dev.device_descriptor()?;
+        let serial = read_serial(dev);
+        Ok(Self {
+            vid: desc.vendor_id(),
+            pid: desc.product_id(),
+            serial: (!serial.is_empty()).then_some(serial),
+        })
+    }
+
     /// Whether `dev` carries this identity. An unreadable descriptor matches
     /// nothing.
     #[must_use]

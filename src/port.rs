@@ -1,13 +1,13 @@
 //! One downstream hub port, and the two ways to switch its power.
 
-use rusb::constants::{LIBUSB_REQUEST_CLEAR_FEATURE, LIBUSB_REQUEST_SET_FEATURE};
+use rusb::constants::{LIBUSB_CLASS_HUB, LIBUSB_REQUEST_CLEAR_FEATURE, LIBUSB_REQUEST_SET_FEATURE};
 use rusb::{DeviceHandle, Direction, GlobalContext, Recipient, RequestType, request_type};
 use std::path::{Path, PathBuf};
 
 use crate::TIMEOUT;
 use crate::error::{Error, Result};
 use crate::hub::Hub;
-use crate::sysfs::{SYSFS_USB, split_port_dir};
+use crate::sysfs::{SYSFS_USB, child_location, read_device_class};
 
 /// `PORT_POWER` feature selector (USB 2.0 §11.24.2, Table 11-17).
 const PORT_POWER: u16 = 8;
@@ -38,11 +38,19 @@ impl HubPort {
     /// `2-1.2.3.4`. Everything at or below it loses power with the port.
     #[must_use]
     pub fn child_location(&self) -> String {
-        if self.hub.is_root_hub() {
-            format!("{}-{}", self.hub.bus, self.port)
-        } else {
-            format!("{}.{}", self.hub.location, self.port)
-        }
+        child_location(&self.hub.location, self.hub.bus, self.port)
+    }
+
+    /// Whether this port can be held down without stranding anything: it is
+    /// empty, or - when the device being cut is a hub - it holds a hub, as
+    /// the other half of that device does (USB 3.2 §10.1).
+    pub(crate) fn is_holdable(&self, target_is_hub: bool) -> bool {
+        !self.is_occupied() || (target_is_hub && self.holds_hub())
+    }
+
+    /// The hub this port belongs to.
+    pub(crate) const fn hub(&self) -> &Hub {
+        &self.hub
     }
 
     /// Whether something is plugged into this port.
@@ -50,20 +58,12 @@ impl HubPort {
         Path::new(SYSFS_USB).join(self.child_location()).exists()
     }
 
-    /// The other logical port of the same receptacle, if the kernel published a
-    /// `peer` link for it.
+    /// Whether what is plugged into this port is a hub.
     ///
-    /// The peer's hub location and its port on that hub - `("usb4", 1)`,
-    /// `("2-1.2", 3)` - as [`Hubs::open_at`](crate::hub::Hubs::open_at) and
-    /// [`Self::new`] take them, not the port directory the link names
-    /// (`usb4-port1`).
-    ///
-    /// `None` means the peer is unknown, not absent: no link, or an unreadable
-    /// one.
-    pub(crate) fn peer(&self) -> Option<(String, u8)> {
-        let target = std::fs::read_link(self.dir.join("peer")).ok()?;
-        let (loc, port) = split_port_dir(target.file_name()?.to_str()?)?;
-        Some((loc.to_string(), port))
+    /// Read from sysfs, so an empty port and an unreadable class both read
+    /// `false`.
+    pub(crate) fn holds_hub(&self) -> bool {
+        read_device_class(&self.child_location()) == Some(LIBUSB_CLASS_HUB)
     }
 
     /// The port's `disable` attribute, if this kernel exposes one (6.0+).

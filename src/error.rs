@@ -1,5 +1,7 @@
 //! Why a power cycle could not be carried out.
 
+use std::path::PathBuf;
+
 use crate::device::DeviceId;
 
 /// Why a power cycle could not be carried out.
@@ -32,6 +34,29 @@ pub enum Error {
         /// sysfs location of the device, e.g. `2-1.2.3.4`.
         device: String,
     },
+    /// The device's own hub does not switch power per port, and the nearest
+    /// port above that does feeds that hub whole. Cutting it would take every
+    /// device on the hub, so it is refused rather than done on the caller's
+    /// behalf.
+    ///
+    /// To cycle the hub and everything on it deliberately, target the hub:
+    /// `hub_id` is its identity as [`crate::PowerPorts::find`] takes it. For a
+    /// USB 3.x hub this names the half on the device's bus; either half works.
+    #[error(
+        "{device} is behind hub {hub}{}, which does not switch power per port; \
+         cutting the port above it would take every device on that hub - \
+         target the hub itself to cycle all of it",
+        hub_id_hint(.hub_id.as_ref())
+    )]
+    BehindHub {
+        /// sysfs location of the device, e.g. `2-1.2.3.4`.
+        device: String,
+        /// sysfs location of the hub between it and the switchable port, e.g.
+        /// `2-1.2.3`.
+        hub: String,
+        /// That hub's identity, if its descriptor could be read.
+        hub_id: Option<DeviceId>,
+    },
     /// No hub is enumerated at this sysfs location. The bus topology changed
     /// during the search, or a `peer` link named a port whose hub is gone.
     #[error("no hub enumerated at {location} - did the bus topology change?")]
@@ -63,21 +88,66 @@ pub enum Error {
         /// Its peer, which is not individually switchable.
         peer: String,
     },
-    /// The kernel named the receptacle's other half through a `peer` link, but
-    /// that port holds a device.
-    ///
-    /// One receptacle holds one device, so the other half must read empty. The
-    /// link therefore does not mean what this crate takes it to mean, and
+    /// The other half of the receptacle holds a device, which it cannot: one
+    /// receptacle holds one device - unless that device is a hub, whose two
+    /// halves sit one on each port (USB 3.2 §10.1), in which case the other
+    /// half must hold a hub. Anything else means the pairing is wrong, and
     /// cutting the port would strand whatever is on it.
     #[error(
-        "cannot identify the other half of {port}: the kernel names {candidate} \
-         as its peer, but that port is occupied, so it is not the peer"
+        "the other half of {port}'s receptacle should be {candidate}, but that port \
+         holds a device of its own, so the hub pairing is wrong - check `--pairs`"
     )]
     PeerNotFound {
         /// The port that would have been cut.
         port: String,
-        /// The port the kernel named as its peer.
+        /// The port the pairing named as its other half.
         candidate: String,
+    },
+    /// The port is on one half of a USB 3.x hub whose other half could not be
+    /// identified, and the receptacle's VBUS stays on while either half
+    /// powers it. Cutting this port alone would disconnect the device without
+    /// powering it off, so nothing is cut.
+    ///
+    /// The bus does not describe which hubs share receptacles when their
+    /// paths differ, so the pair has to be declared once for the machine - see
+    /// [`crate::HubPairs`]. [`crate::pairing_report`] shows every hub and why
+    /// this one is unpaired; [`crate::probe`] finds the pair by watching the
+    /// device's power LED.
+    #[error(
+        "{port} is on one half of a USB 3.x hub whose {other_side} half could not \
+         be identified, and its receptacles stay powered while either half is on - \
+         cutting {port} alone would only disconnect the device, not power it off. \
+         Which hubs share receptacles cannot be read from the bus here, so it has \
+         to be declared once for this machine: the pairing report shows why, and \
+         probing {hub} with a device that has a power LED finds the pair to declare"
+    )]
+    HubUnpaired {
+        /// The port that would have been cut.
+        port: String,
+        /// sysfs location of its hub, e.g. `2-1.2`.
+        hub: String,
+        /// Which side is missing: `USB 2.0` or `SuperSpeed`.
+        other_side: &'static str,
+    },
+    /// A line of the hub pairs text is not a pair.
+    #[error(
+        "line {line} of the hub pairs is not a pair: `{text}` \
+         (expected `<hub> <hub>` or `<hub> none`, e.g. `2-1 usb3`)"
+    )]
+    PairsSyntax {
+        /// 1-based line number.
+        line: usize,
+        /// The line as written.
+        text: String,
+    },
+    /// The pairs file could not be read.
+    #[error("hub pairs file {} could not be read: {source}", .path.display())]
+    PairsUnreadable {
+        /// The file.
+        path: PathBuf,
+        /// Why.
+        #[source]
+        source: std::io::Error,
     },
     /// Neither sysfs nor usbfs would switch the port.
     #[error(
@@ -125,10 +195,18 @@ pub enum Error {
     /// An enumeration or descriptor read failed.
     #[error("usb error: {0}")]
     Usb(#[from] rusb::Error),
+    /// Writing a report, or reading an answer, failed.
+    #[error("i/o error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 /// Result alias for this crate's [`Error`].
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// The hub's identity in parentheses, where it could be read.
+fn hub_id_hint(id: Option<&DeviceId>) -> String {
+    id.map_or_else(String::new, |id| format!(" ({id})"))
+}
 
 /// The likely fix when a hub refused access, appended to the message.
 const fn udev_hint(source: rusb::Error) -> &'static str {
@@ -180,6 +258,40 @@ mod tests {
         let timeout = hub_unreadable(rusb::Error::Timeout).to_string();
         assert!(timeout.contains("Operation timed out"));
         assert!(!timeout.contains("udev"));
+    }
+
+    #[test]
+    fn behind_hub_names_the_hub_to_target() {
+        let with_id = Error::BehindHub {
+            device: "2-1.2.3.4".to_string(),
+            hub: "2-1.2.3".to_string(),
+            hub_id: Some(DeviceId::new(0x0bda, 0x5411, None)),
+        }
+        .to_string();
+        assert!(with_id.starts_with("2-1.2.3.4 is behind hub 2-1.2.3 (0bda:5411), "));
+        assert!(with_id.ends_with("target the hub itself to cycle all of it"));
+
+        let without = Error::BehindHub {
+            device: "2-1.2.3.4".to_string(),
+            hub: "2-1.2.3".to_string(),
+            hub_id: None,
+        }
+        .to_string();
+        assert!(without.starts_with("2-1.2.3.4 is behind hub 2-1.2.3, "));
+    }
+
+    #[test]
+    fn hub_unpaired_says_what_to_do() {
+        let msg = Error::HubUnpaired {
+            port: "2-1.2 port 4".to_string(),
+            hub: "2-1.2".to_string(),
+            other_side: "SuperSpeed",
+        }
+        .to_string();
+        assert!(
+            msg.starts_with("2-1.2 port 4 is on one half of a USB 3.x hub whose SuperSpeed half")
+        );
+        assert!(msg.contains("probing 2-1.2 with a device that has a power LED"));
     }
 
     #[test]

@@ -22,7 +22,7 @@ const HUB_DESC_MIN_LEN: usize = 9;
 
 /// A hub declaring at least this may be the USB 2.0 half of a USB 3.x
 /// receptacle. One declaring USB 2.0 has no `SuperSpeed` half.
-const USB_BOS: Version = Version(2, 1, 0);
+pub const USB_BOS: Version = Version(2, 1, 0);
 /// A hub declaring at least this is a `SuperSpeed` hub.
 pub const USB_SS: Version = Version(3, 0, 0);
 
@@ -73,8 +73,8 @@ impl Hub {
         Ok(Self {
             bus: dev.bus_number(),
             location,
-            dev,
             version,
+            dev,
             nports,
             per_port_power,
         })
@@ -89,11 +89,6 @@ impl Hub {
     /// Whether this is at least a USB 3 hub
     pub fn is_super_speed(&self) -> bool {
         self.version >= USB_SS
-    }
-
-    /// Whether this hub can be one half of a USB 3.x receptacle.
-    pub fn may_have_peer(&self) -> bool {
-        self.version >= USB_BOS
     }
 
     /// sysfs directory of one downstream port, e.g.
@@ -161,6 +156,12 @@ const fn parse_hub_descriptor(desc: &[u8]) -> Option<(u8, bool)> {
     Some((nports, per_port_power))
 }
 
+/// Whether `dev` is a hub, by device class. An unreadable descriptor is not.
+pub fn is_hub(dev: &Device) -> bool {
+    dev.device_descriptor()
+        .is_ok_and(|d| d.class_code() == LIBUSB_CLASS_HUB)
+}
+
 /// Every hub enumerated on the bus, unopened.
 ///
 /// Only [`Hubs::enumerate`] builds one, and it filters on the hub device class,
@@ -175,15 +176,7 @@ impl Hubs {
     ///
     /// Whatever enumerating the bus returns.
     pub fn enumerate() -> rusb::Result<Self> {
-        Ok(Self(
-            rusb::devices()?
-                .iter()
-                .filter(|dev| {
-                    dev.device_descriptor()
-                        .is_ok_and(|d| d.class_code() == LIBUSB_CLASS_HUB)
-                })
-                .collect(),
-        ))
+        Ok(Self(rusb::devices()?.iter().filter(is_hub).collect()))
     }
 
     /// Open the hub at `location`.
@@ -198,14 +191,15 @@ impl Hubs {
     /// topology moved under the search, or [`Error::HubUnreadable`] if the hub
     /// is there but will not open.
     pub fn open_at(&self, location: &str) -> Result<Hub> {
-        let dev = self
-            .0
-            .iter()
-            .find(|dev| device_location(dev) == location)
-            .ok_or_else(|| Error::HubMissing {
-                location: location.to_string(),
-            })?;
+        let dev = self.device_at(location).ok_or_else(|| Error::HubMissing {
+            location: location.to_string(),
+        })?;
         Hub::open(dev.clone())
+    }
+
+    /// The hub at `location`, unopened, if one is enumerated there.
+    pub fn device_at(&self, location: &str) -> Option<&Device> {
+        self.0.iter().find(|dev| device_location(dev) == location)
     }
 
     /// The hubs, still unopened.

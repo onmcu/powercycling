@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use crate::device::{DeviceId, find_device};
 use crate::error::{Error, Result};
-use crate::hub::{Hub, Hubs, USB_SS};
+use crate::hub::{Hub, Hubs, is_hub};
+use crate::pairing::{HubPairs, Pairing};
 use crate::port::HubPort;
 use crate::sysfs::sysfs_location;
 
@@ -17,12 +18,16 @@ const SS_POWER_OFF_SETTLE: Duration = Duration::from_millis(200);
 /// The ports that must be switched to cut VBUS to one device.
 #[derive(Debug, Clone)]
 pub struct PowerPorts {
-    /// The port feeding the device, on the nearest hub above it that switches
-    /// power per port.
+    /// The port feeding the device, on the hub directly above it.
     primary: HubPort,
-    /// The ports held down alongside [`Self::primary`] so the receptacle's
-    /// other half cannot keep VBUS alive.
+    /// The port on the other half of the receptacle, held down alongside
+    /// [`Self::primary`] so it cannot keep VBUS alive. Empty when the
+    /// receptacle has no other half.
     held: Vec<HubPort>,
+    /// Whether the device is itself a hub. A USB 3.x hub is two logical hubs,
+    /// one on each half of its receptacle (USB 3.2 §10.1), so its other half
+    /// legitimately occupies the held port and is cut along with it.
+    target_is_hub: bool,
     /// The device the ports were found for, kept so [`Self::is_gone`] can look
     /// it up again once its VBUS is off (and the device disconnected).
     device: DeviceId,
@@ -31,18 +36,28 @@ pub struct PowerPorts {
 impl PowerPorts {
     /// Find the ports that must be switched to cut VBUS to `device`.
     ///
+    /// `pairs` declares which hubs share receptacles where the bus cannot
+    /// tell - [`HubPairs::none`] on a board that needs nothing declared.
+    ///
     /// Call this before cutting power: once VBUS drops, the device leaves the
     /// bus and can no longer be looked up by serial.
+    ///
+    /// Only the device's own port is ever cut. If the hub it hangs off does
+    /// not switch power per port, the port that does sits further up and
+    /// feeds that hub whole; `find` refuses with [`Error::BehindHub`] rather
+    /// than cutting every device on the hub. To cycle a hub and everything on
+    /// it, name the hub.
     ///
     /// # Errors
     ///
     /// [`Error::NotFound`] if no device matches, [`Error::Ambiguous`] if more
     /// than one does, [`Error::NoSwitchableHub`] if no hub above it switches
-    /// power per port, [`Error::HubUnreadable`] if a
-    /// hub in the chain could not be opened, [`Error::PeerNotSwitchable`] if
-    /// the receptacle's other half is ganged, or [`Error::PeerNotFound`] if it
-    /// could not be identified.
-    pub fn find(device: &DeviceId) -> Result<Self> {
+    /// power per port, [`Error::BehindHub`] if one does but only above a hub
+    /// that does not, [`Error::HubUnreadable`] if a hub in the chain could not
+    /// be opened, [`Error::HubUnpaired`] if the receptacle's other half could
+    /// not be identified, [`Error::PeerNotSwitchable`] if it is ganged, or
+    /// [`Error::PeerNotFound`] if it holds a device of its own.
+    pub fn find(device: &DeviceId, pairs: &HubPairs) -> Result<Self> {
         // Obtain information about where the device is connected
         let dev = find_device(device)?;
         let bus = dev.bus_number();
@@ -50,45 +65,35 @@ impl PowerPorts {
 
         let hubs = Hubs::enumerate()?;
 
-        // Find the nearest hub above bus/path that switches power per port
-        let (hub, port) = nearest_switchable_hub(&hubs, bus, &path)?;
-        let primary_hub_port = HubPort::new(hub.clone(), port)?;
+        // The hub directly above bus/path, which has to switch power per port
+        let (hub, port) = switchable_parent(&hubs, bus, &path)?;
+        let primary_hub_port = HubPort::new(hub, port)?;
 
-        // A USB 2.0 hub has no SuperSpeed half, so its receptacles have one port.
-        let held = if hub.may_have_peer() {
-            peer_ports(&hubs, &primary_hub_port, port)?
-        } else {
-            Vec::new()
-        };
+        let target_is_hub = is_hub(&dev);
+        let pairing = Pairing::compute(&hubs, pairs);
+        let held = peer_ports(&hubs, &pairing, &primary_hub_port, port, target_is_hub)?;
 
         Ok(Self {
             primary: primary_hub_port,
             held,
+            target_is_hub,
             device: device.clone(),
         })
     }
 
-    /// The port feeding the device, on the nearest hub above it that switches
-    /// power per port.
+    /// The port feeding the device, on the hub directly above it.
     #[must_use]
     pub const fn primary(&self) -> &HubPort {
         &self.primary
     }
 
-    /// The ports held down alongside [`Self::primary`] so the receptacle's
-    /// other half cannot keep VBUS alive.
+    /// The port on the other half of the receptacle, held down alongside
+    /// [`Self::primary`] so it cannot keep VBUS alive: the same port number on
+    /// the hub paired with [`Self::primary`]'s (USB 3.2 §10.3.3). Empty when
+    /// the receptacle has no other half.
     ///
-    /// One port when a kernel `peer` link named it, otherwise every empty
-    /// opposite-speed port carrying [`Self::primary`]'s port number, which
-    /// includes it (USB 3.2 §10.3.3). Empty when the receptacle has no other
-    /// half.
-    ///
-    /// Without a `peer` link, empty does not prove there is no other half: a
-    /// half that switches power in ganged mode is left out rather than
-    /// reported, since it cannot be told apart from an unrelated hub. Cutting
-    /// then drops the device off the bus with VBUS still up, which
-    /// [`Self::cycle`] cannot detect (see [`Error::PowerOffIneffective`]).
-    /// Confirm once per hardware setup with an LED or a meter.
+    /// When the device is itself a hub, its other half occupies this port
+    /// (§10.1) and is cut with it.
     #[must_use]
     pub fn held(&self) -> &[HubPort] {
         &self.held
@@ -121,7 +126,10 @@ impl PowerPorts {
     /// Restoring tries every port regardless and reports the first failure, so
     /// one bad port never leaves the others held down.
     fn switch_held(&self, on: bool) -> Result<()> {
-        let mut ports = self.held.iter().filter(|p| on || !p.is_occupied());
+        let mut ports = self
+            .held
+            .iter()
+            .filter(|p| on || p.is_holdable(self.target_is_hub));
         if on {
             ports.map(|p| p.set_power(true)).fold(Ok(()), Result::and)
         } else {
@@ -184,108 +192,102 @@ impl PowerPorts {
     }
 }
 
-/// The nearest hub above `bus`-`path` that switches power per port, and the
-/// port of it leading down to the device.
+/// The hub directly above `bus`-`path`, which has to switch power per port,
+/// and the port of it leading down to the device.
 ///
 /// Hubs chained behind a capable one commonly report ganged switching, where
-/// clearing `PORT_POWER` disconnects the port without dropping VBUS, so the
-/// device's immediate parent is often the wrong hub.
+/// clearing `PORT_POWER` disconnects the port without dropping VBUS. The port
+/// that does cut VBUS is then further up and feeds the chained hub whole, so
+/// cutting it takes every device on that hub. That is refused rather than done
+/// on the caller's behalf: [`Error::BehindHub`] names the hub, and naming it as
+/// the device cycles all of it deliberately.
 ///
 /// The walk stops below the root hub. Root hub ports are host controller ports,
-/// which the specification's hub chapter does not cover (USB 3.2 §10.1) - in
-/// particular nothing relates the two root hubs' port numbers, so the other
-/// half of such a receptacle cannot be identified.
-fn nearest_switchable_hub(hubs: &Hubs, bus: u8, path: &[u8]) -> Result<(Hub, u8)> {
+/// which the specification's hub chapter does not cover (USB 3.2 §10.1).
+fn switchable_parent(hubs: &Hubs, bus: u8, path: &[u8]) -> Result<(Hub, u8)> {
     for len in (2..=path.len()).rev() {
         let hub = hubs.open_at(&sysfs_location(bus, &path[..len - 1]))?;
-        if hub.per_port_power {
+        if !hub.per_port_power {
+            continue;
+        }
+        if len == path.len() {
             return Ok((hub, path[len - 1]));
         }
+        // The nearest switchable port feeds a chained hub, not the device.
+        let chained = sysfs_location(bus, &path[..len]);
+        let hub_id = hubs
+            .device_at(&chained)
+            .and_then(|dev| DeviceId::of(dev).ok());
+        return Err(Error::BehindHub {
+            device: sysfs_location(bus, path),
+            hub: chained,
+            hub_id,
+        });
     }
     Err(Error::NoSwitchableHub {
         device: sysfs_location(bus, path),
     })
 }
 
-/// The ports on the other half of the receptacle `primary` feeds, which have to
+/// The port on the other half of the receptacle `primary` feeds, which has to
 /// be cut with it: VBUS stays on while either half asks for it (USB 3.2 §10.1,
 /// Table 10-2).
 ///
-/// The kernel names the port outright where it publishes a `peer` link. Where
-/// it does not, the peer carries the same port number as `primary`, because
-/// both halves of a hub number their downstream ports alike (§10.3.3) - but
-/// which hub is the other half cannot be derived. Nothing relates the two root
-/// hubs' port numbers (§10.1), and a chain can enter the two buses at different
-/// depths, so the halves of one hub need not sit at the same port path: an
-/// RTS5411 whose USB 2.0 half hangs off a USB 2.0-only hub at `2-1.2` has its
-/// `SuperSpeed` half directly on a root port at `3-2`.
+/// It is port `port` of the hub paired with `primary`'s, because both halves
+/// of a hub number their downstream ports alike (§10.3.3). Which hub that is
+/// comes from [`Pairing`].
 ///
-/// So the port number is used as the filter and the hub is left unidentified:
-/// every empty port of that number, on an opposite-speed hub that switches
-/// power per port, is held. The peer is among them by construction, and empty
-/// ports feed nothing, so the ones that are not the peer cost nothing.
-///
-/// Empty when the receptacle has no other half to hold. A half that is not on
-/// the bus holds no `PORT_POWER`, so VBUS follows the half that is
-/// (Table 10-2).
+/// Empty when the receptacle has no other half to hold: the hub is a USB 2.0
+/// hub or declared alone, or the declared partner has no port of that number.
 ///
 /// # Errors
 ///
-/// [`Error::PeerNotSwitchable`] if the kernel named a ganged peer,
-/// [`Error::PeerNotFound`] if it named an occupied one, or
-/// [`Error::HubUnreadable`] if the named hub could not be opened.
-fn peer_ports(hubs: &Hubs, primary: &HubPort, port: u8) -> Result<Vec<HubPort>> {
-    let Some((location, peer)) = primary.peer() else {
-        return Ok(numbered_opposite_speed_ports(
-            hubs,
-            primary.is_super_speed(),
-            port,
-        ));
+/// [`Error::HubUnpaired`] if the hub has another half that could not be
+/// identified, [`Error::PeerNotSwitchable`] if that half is ganged,
+/// [`Error::PeerNotFound`] if its port holds a device of its own, or
+/// [`Error::HubUnreadable`] if it could not be opened.
+fn peer_ports(
+    hubs: &Hubs,
+    pairing: &Pairing,
+    primary: &HubPort,
+    port: u8,
+    target_is_hub: bool,
+) -> Result<Vec<HubPort>> {
+    let hub = primary.hub();
+    let Some(other) = pairing.other_half(&hub.location) else {
+        if pairing.is_alone(&hub.location) {
+            return Ok(Vec::new());
+        }
+        return Err(Error::HubUnpaired {
+            port: primary.to_string(),
+            hub: hub.location.clone(),
+            other_side: if hub.is_super_speed() {
+                "USB 2.0"
+            } else {
+                "SuperSpeed"
+            },
+        });
     };
 
-    let peer_hub = hubs.open_at(&location)?;
+    let peer_hub = hubs.open_at(other)?;
+    // A declared partner may be smaller than the hub - a root hub with fewer
+    // ports, say. A receptacle beyond its last port has one half only.
+    if port > peer_hub.nports {
+        return Ok(Vec::new());
+    }
     if !peer_hub.per_port_power {
         return Err(Error::PeerNotSwitchable {
             port: primary.to_string(),
-            peer: format!("{location} port {peer}"),
+            peer: format!("{other} port {port}"),
         });
     }
 
-    let peer = HubPort::new(peer_hub, peer)?;
-    // One receptacle holds one device, so a named peer must read empty. If it
-    // does not, the link does not mean what this crate takes it to mean, and
-    // cutting the port would strand a device.
-    if peer.is_occupied() {
+    let peer = HubPort::new(peer_hub, port)?;
+    if !peer.is_holdable(target_is_hub) {
         return Err(Error::PeerNotFound {
             port: primary.to_string(),
             candidate: peer.to_string(),
         });
     }
     Ok(vec![peer])
-}
-
-/// Every empty port numbered `port` on an opposite-speed hub that switches
-/// power per port.
-///
-/// Ganged hubs are excluded: clearing `PORT_POWER` on one of their ports can
-/// take its neighbours with it. Root hubs are too - the other half of an
-/// external hub's receptacle is that hub's own other half, never a host
-/// controller port.
-fn numbered_opposite_speed_ports(
-    hubs: &Hubs,
-    primary_is_super_speed: bool,
-    port: u8,
-) -> Vec<HubPort> {
-    hubs.iter()
-        .filter(|dev| dev.port_numbers().is_ok_and(|path| !path.is_empty()))
-        .filter(|dev| {
-            dev.device_descriptor()
-                .is_ok_and(|d| (d.usb_version() >= USB_SS) != primary_is_super_speed)
-        })
-        // A hub that cannot be opened is one that could not be switched anyway.
-        .filter_map(|dev| Hub::open(dev.clone()).ok())
-        .filter(|hub| hub.per_port_power && port <= hub.nports)
-        .filter_map(|hub| HubPort::new(hub, port).ok())
-        .filter(|peer| !peer.is_occupied())
-        .collect()
 }

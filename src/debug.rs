@@ -3,9 +3,26 @@
 use std::io::Write;
 
 use crate::device::{Device, DeviceId};
-use crate::hub::{Hub, Hubs};
+use crate::hub::Hubs;
+use crate::pairing::{HubPairs, Pairing};
 use crate::power::PowerPorts;
 use crate::sysfs::{device_location, read_serial};
+
+/// Write every hub, which other hub it is paired with and on what evidence,
+/// to `out` - followed by what to do about any hub left unpaired.
+///
+/// `pairs` is what the machine declares.
+///
+/// # Errors
+///
+/// Only if `out` could not be written to.
+pub fn pairing_report(pairs: &HubPairs, out: &mut impl Write) -> std::io::Result<()> {
+    writeln!(out, "-- hubs and their other halves")?;
+    match Hubs::enumerate() {
+        Ok(hubs) => Pairing::compute(&hubs, pairs).report(out),
+        Err(e) => writeln!(out, "   bus could not be enumerated: {e}"),
+    }
+}
 
 /// Write what each stage of the search sees to `out`.
 ///
@@ -16,7 +33,11 @@ use crate::sysfs::{device_location, read_serial};
 /// # Errors
 ///
 /// Only if `out` could not be written to.
-pub fn debug_scan(device: &DeviceId, out: &mut impl Write) -> std::io::Result<()> {
+pub fn debug_scan(
+    device: &DeviceId,
+    pairs: &HubPairs,
+    out: &mut impl Write,
+) -> std::io::Result<()> {
     writeln!(
         out,
         "-- devices matching {:04x}:{:04x}",
@@ -49,36 +70,17 @@ pub fn debug_scan(device: &DeviceId, out: &mut impl Write) -> std::io::Result<()
         writeln!(out, "   {loc}  serial={found:?}  {verdict}")?;
     }
 
-    writeln!(out, "-- hubs")?;
-    let hubs = match Hubs::enumerate() {
-        Ok(hubs) => hubs,
-        Err(e) => return writeln!(out, "   bus could not be enumerated: {e}"),
-    };
-    for dev in hubs.iter() {
-        let loc = device_location(dev);
-        match Hub::open(dev.clone()) {
-            Ok(hub) => writeln!(
-                out,
-                "   {:<12} USB {}.{}  {} ports  {}",
-                hub.location,
-                hub.version.major(),
-                hub.version.minor(),
-                hub.nports,
-                if hub.per_port_power { "ppps" } else { "ganged" },
-            )?,
-            Err(e) => writeln!(out, "   {loc:<12} {e}")?,
-        }
-    }
+    pairing_report(pairs, out)?;
 
-    match PowerPorts::find(device) {
+    match PowerPorts::find(device, pairs) {
         Err(e) => writeln!(out, "-- search failed: {e}"),
         Ok(ports) => {
             writeln!(out, "-- cutting {:?}", ports.primary())?;
             match ports.held() {
-                [] => writeln!(out, "   nothing held down (no opposite-speed port to hold)"),
+                [] => writeln!(out, "   nothing held down (receptacle has no other half)"),
                 held => {
                     let names: Vec<String> = held.iter().map(ToString::to_string).collect();
-                    writeln!(out, "   holding down {}: {}", held.len(), names.join(", "))
+                    writeln!(out, "   holding down {}", names.join(", "))
                 }
             }
         }
