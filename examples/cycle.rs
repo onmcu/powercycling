@@ -231,6 +231,8 @@ fn verify(device: &DeviceId, pairs: &HubPairs) -> powercycling::Result<()> {
         expected.join(", ")
     );
 
+    println!("watch the board's power LED: dark => VBUS was cut, lit => only the link dropped\n");
+
     let before = bus_snapshot();
     let t0 = Instant::now();
     ports.set_power(false)?;
