@@ -96,11 +96,10 @@ impl PowerPorts {
 
     /// Whether the device is currently absent from the bus.
     ///
-    /// Returns
+    /// # Errors
     /// - `Ok(true)` if the device is not found
     /// - `Ok(false)` if the device is found
     /// - `Err` if an error occurs while searching for the device
-    #[must_use]
     pub fn is_gone(&self) -> Result<bool> {
         match find_device(&self.device) {
             // Found means it is not gone
