@@ -3,7 +3,10 @@
 use rusb::constants::{
     LIBUSB_CLASS_HUB, LIBUSB_DT_HUB, LIBUSB_DT_SUPERSPEED_HUB, LIBUSB_REQUEST_GET_DESCRIPTOR,
 };
-use rusb::{DeviceHandle, Direction, GlobalContext, Recipient, RequestType, Version, request_type};
+use rusb::{
+    DeviceHandle, DeviceList, Direction, GlobalContext, Recipient, RequestType, Version,
+    request_type,
+};
 use std::path::PathBuf;
 
 use crate::error::{Error, Result};
@@ -35,6 +38,9 @@ pub struct Hub {
     pub location: String,
     /// Bus number this hub is connected to
     pub bus: u8,
+    /// Port path from the root hub, e.g. `[1, 2]` for `2-1.2`; empty for a
+    /// root hub.
+    pub path: Vec<u8>,
     /// USB version
     pub version: Version,
     /// Vendor ID. Both halves of a USB 3.x hub carry the same one.
@@ -63,6 +69,7 @@ impl Hub {
         };
 
         let desc = dev.device_descriptor().map_err(unreadable)?;
+        let path = dev.port_numbers().map_err(unreadable)?;
 
         // The declared spec version, not the negotiated link speed: a
         // SuperSpeed hub plugged into a USB 2.0 port is still the SS half.
@@ -75,6 +82,7 @@ impl Hub {
         Ok(Self {
             bus: dev.bus_number(),
             location,
+            path,
             version,
             vid: desc.vendor_id(),
             dev,
@@ -86,12 +94,27 @@ impl Hub {
     /// Whether this is the bus's root hub, i.e. nothing above it in the tree.
     /// Its USB port path is empty, so sysfs names it `usb<bus>` instead of
     /// `<bus>-<port path>`, which every location built from it must account for.
-    pub fn is_root_hub(&self) -> bool {
-        self.dev.port_numbers().unwrap_or_default().is_empty()
+    pub const fn is_root_hub(&self) -> bool {
+        self.path.is_empty()
     }
+
+    /// How many hubs are above this one; 0 for a root hub.
+    pub const fn depth(&self) -> usize {
+        self.path.len()
+    }
+
     /// Whether this is at least a USB 3 hub
     pub fn is_super_speed(&self) -> bool {
         self.version >= USB_SS
+    }
+
+    /// The side its other half would be on: `USB 2.0` or `SuperSpeed`.
+    pub fn other_side(&self) -> &'static str {
+        if self.is_super_speed() {
+            "USB 2.0"
+        } else {
+            "SuperSpeed"
+        }
     }
 
     /// sysfs directory of one downstream port, e.g.
@@ -179,7 +202,12 @@ impl Hubs {
     ///
     /// Whatever enumerating the bus returns.
     pub fn enumerate() -> rusb::Result<Self> {
-        Ok(Self(rusb::devices()?.iter().filter(is_hub).collect()))
+        Ok(Self::of(&rusb::devices()?))
+    }
+
+    /// The hubs among an already enumerated bus.
+    pub fn of(devices: &DeviceList<GlobalContext>) -> Self {
+        Self(devices.iter().filter(is_hub).collect())
     }
 
     /// Open the hub at `location`.

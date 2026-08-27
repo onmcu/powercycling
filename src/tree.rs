@@ -61,11 +61,11 @@ impl Entry {
 ///
 /// Only if `out` could not be written to.
 pub fn tree(pairs: &HubPairs, out: &mut impl Write) -> std::io::Result<()> {
-    let (devices, hubs) = match (rusb::devices(), Hubs::enumerate()) {
-        (Ok(devices), Ok(hubs)) => (devices, hubs),
-        (Err(e), _) | (_, Err(e)) => return writeln!(out, "bus could not be enumerated: {e}"),
+    let devices = match rusb::devices() {
+        Ok(devices) => devices,
+        Err(e) => return writeln!(out, "bus could not be enumerated: {e}"),
     };
-    let pairing = Pairing::compute(&hubs, pairs);
+    let pairing = Pairing::compute(&Hubs::of(&devices), pairs);
     let entries: Vec<Entry> = devices.iter().filter_map(|d| Entry::read(&d)).collect();
     let by_location: HashMap<&str, &Entry> =
         entries.iter().map(|e| (e.location.as_str(), e)).collect();

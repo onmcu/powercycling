@@ -81,7 +81,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let t0 = Instant::now();
     let ports = find(&device, above, &pairs)?;
     let found = t0.elapsed();
-    describe(&ports);
+    println!("{ports}");
 
     ports.cycle(OFF_TIME)?;
     let cycled = t0.elapsed();
@@ -125,20 +125,6 @@ fn find(device: &DeviceId, above: u8, pairs: &HubPairs) -> powercycling::Result<
         ),
         _ => {}
     })
-}
-
-fn describe(ports: &PowerPorts) {
-    println!("cutting {:?}", ports.primary());
-    match ports.held() {
-        [] => println!("   nothing held down (receptacle has no other half)"),
-        held => println!(
-            "   holding down {}",
-            held.iter()
-                .map(|p| format!("{p:?}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    }
 }
 
 /// Find the other half of `hub`'s receptacles by watching the power LED of
@@ -216,18 +202,15 @@ fn verify(device: &DeviceId, above: u8, pairs: &HubPairs) -> powercycling::Resul
     let t = Instant::now();
     let ports = find(device, above, pairs)?;
     println!("found ports in {:?}", t.elapsed());
-    describe(&ports);
+    println!("{ports}");
 
+    let before = bus_snapshot();
     // Held-down ports are empty, unless the target is a hub: then one of them
     // feeds its other half, which drops along with it.
     let expected: Vec<String> = std::iter::once(ports.primary())
         .chain(ports.held())
         .map(HubPort::child_location)
-        .filter(|loc| {
-            std::path::Path::new("/sys/bus/usb/devices")
-                .join(loc)
-                .exists()
-        })
+        .filter(|loc| before.contains(loc))
         .collect();
     println!(
         "expecting only {} (and anything below) to drop\n",
@@ -236,7 +219,6 @@ fn verify(device: &DeviceId, above: u8, pairs: &HubPairs) -> powercycling::Resul
 
     println!("watch the board's power LED: dark => VBUS was cut, lit => only the link dropped\n");
 
-    let before = bus_snapshot();
     let t0 = Instant::now();
     ports.set_power(false)?;
     let cut = t0.elapsed();

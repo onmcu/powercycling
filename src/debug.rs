@@ -59,15 +59,6 @@ pub fn debug_scan(
 
     match PowerPorts::find(device, pairs) {
         Err(e) => writeln!(out, "-- search failed: {e}"),
-        Ok(ports) => {
-            writeln!(out, "-- cutting {:?}", ports.primary())?;
-            match ports.held() {
-                [] => writeln!(out, "   nothing held down (receptacle has no other half)"),
-                held => {
-                    let names: Vec<String> = held.iter().map(ToString::to_string).collect();
-                    writeln!(out, "   holding down {}", names.join(", "))
-                }
-            }
-        }
+        Ok(ports) => writeln!(out, "-- {ports}"),
     }
 }

@@ -41,11 +41,11 @@ impl HubPort {
         child_location(&self.hub.location, self.hub.bus, self.port)
     }
 
-    /// Whether this port can be held down without stranding anything: it is
-    /// empty, or - when the device being cut is a hub - it holds a hub, as
-    /// the other half of that device does (USB 3.2 §10.1).
-    pub(crate) fn is_holdable(&self, target_is_hub: bool) -> bool {
-        !self.is_occupied() || (target_is_hub && self.holds_hub())
+    /// Whether this port can be held down alongside `primary` without
+    /// stranding anything: it is empty, or both ports hold a hub - the two
+    /// halves of one hub sit on one receptacle (USB 3.2 §10.1).
+    pub(crate) fn is_holdable_for(&self, primary: &Self) -> bool {
+        !self.is_occupied() || (primary.holds_hub() && self.holds_hub())
     }
 
     /// The hub this port belongs to.

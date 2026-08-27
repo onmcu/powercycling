@@ -59,6 +59,11 @@ pub fn read_sysfs(location: &str, attribute: &str) -> String {
         .unwrap_or_default()
 }
 
+/// A hub's `bNbrPorts` from sysfs (`maxchild`), or `None` if unreadable.
+pub fn read_max_child(location: &str) -> Option<u8> {
+    read_sysfs(location, "maxchild").parse().ok()
+}
+
 /// Read a device's serial from sysfs, or empty if it publishes none.
 ///
 /// Not a string-descriptor read: that needs usbfs write permission, which would

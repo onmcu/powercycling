@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use crate::device::{DeviceId, find_device};
 use crate::error::{Error, Result};
-use crate::hub::{Hub, Hubs, is_hub};
-use crate::pairing::{HubPairs, Pairing};
+use crate::hub::{Hub, Hubs};
+use crate::pairing::{HubPairs, Pairing, Verdict};
 use crate::port::HubPort;
 use crate::sysfs::sysfs_location;
 
@@ -21,13 +21,9 @@ pub struct PowerPorts {
     /// The port feeding the device, on the hub directly above it.
     primary: HubPort,
     /// The port on the other half of the receptacle, held down alongside
-    /// [`Self::primary`] so it cannot keep VBUS alive. Empty when the
+    /// [`Self::primary`] so it cannot keep VBUS alive. `None` when the
     /// receptacle has no other half.
-    held: Vec<HubPort>,
-    /// Whether the device is itself a hub. A USB 3.x hub is two logical hubs,
-    /// one on each half of its receptacle (USB 3.2 §10.1), so its other half
-    /// legitimately occupies the held port and is cut along with it.
-    target_is_hub: bool,
+    held: Option<HubPort>,
 }
 
 impl PowerPorts {
@@ -79,37 +75,28 @@ impl PowerPorts {
         let bus = dev.bus_number();
         let mut path = dev.port_numbers()?;
 
-        let target_is_hub = if levels == 0 {
-            is_hub(&dev)
-        } else {
-            // Climb: everything in the path above the device is a hub. The
-            // root hub is not a target, so at least one port must remain.
-            let keep = path
-                .len()
-                .checked_sub(usize::from(levels))
-                .filter(|&keep| keep > 0)
-                .ok_or_else(|| Error::NothingAbove {
-                    device: sysfs_location(bus, &path),
-                    levels,
-                })?;
-            path.truncate(keep);
-            true
-        };
+        // Climb: everything in the path above the device is a hub. The root
+        // hub is not a target, so at least one port must remain.
+        let keep = path
+            .len()
+            .checked_sub(usize::from(levels))
+            .filter(|&keep| keep > 0)
+            .ok_or_else(|| Error::NothingAbove {
+                device: sysfs_location(bus, &path),
+                levels,
+            })?;
+        path.truncate(keep);
 
         let hubs = Hubs::enumerate()?;
 
         // The hub directly above bus/path, which has to switch power per port
         let (hub, port) = switchable_parent(&hubs, bus, &path)?;
-        let primary_hub_port = HubPort::new(hub, port)?;
+        let primary = HubPort::new(hub, port)?;
 
         let pairing = Pairing::compute(&hubs, pairs);
-        let held = peer_ports(&hubs, &pairing, &primary_hub_port, port, target_is_hub)?;
+        let held = peer_port(&hubs, &pairing, &primary)?;
 
-        Ok(Self {
-            primary: primary_hub_port,
-            held,
-            target_is_hub,
-        })
+        Ok(Self { primary, held })
     }
 
     /// The port feeding the device, on the hub directly above it.
@@ -126,8 +113,8 @@ impl PowerPorts {
     /// When the device is itself a hub, its other half occupies this port
     /// (§10.1) and is cut with it.
     #[must_use]
-    pub fn held(&self) -> &[HubPort] {
-        &self.held
+    pub const fn held(&self) -> &[HubPort] {
+        self.held.as_slice()
     }
 
     /// Whether the device is currently absent from the bus.
@@ -136,33 +123,20 @@ impl PowerPorts {
     /// [`Self::primary`] - rather than looked up by identity, so it works for
     /// a target that shares its `vid:pid` with others, such as one of several
     /// identical hubs.
-    ///
-    /// # Errors
-    ///
-    /// None at present; the `Result` is kept for a future check that may need
-    /// the bus.
-    pub fn is_gone(&self) -> Result<bool> {
-        Ok(!self.primary.is_occupied())
+    #[must_use]
+    pub fn is_gone(&self) -> bool {
+        !self.primary.is_occupied()
     }
 
-    /// Switch the held-down ports.
+    /// Switch the held-down port, if any.
     ///
     /// Occupancy was sampled when the ports were found and a caller may reuse
     /// `PowerPorts` across cycles, so re-check before cutting. Restoring is
     /// unconditional: powering on a live port is a no-op.
-    ///
-    /// Cutting stops at the first failure, since the cut is already void.
-    /// Restoring tries every port regardless and reports the first failure, so
-    /// one bad port never leaves the others held down.
     fn switch_held(&self, on: bool) -> Result<()> {
-        let mut ports = self
-            .held
-            .iter()
-            .filter(|p| on || p.is_holdable(self.target_is_hub));
-        if on {
-            ports.map(|p| p.set_power(true)).fold(Ok(()), Result::and)
-        } else {
-            ports.try_for_each(|p| p.set_power(false))
+        match &self.held {
+            Some(held) if on || held.is_holdable_for(&self.primary) => held.set_power(on),
+            _ => Ok(()),
         }
     }
 
@@ -204,7 +178,7 @@ impl PowerPorts {
     fn cut_and_wait(&self, off_time: Duration) -> Result<()> {
         self.set_power(false)?;
 
-        let super_speed_involved = self.primary.is_super_speed() || !self.held.is_empty();
+        let super_speed_involved = self.primary.is_super_speed() || self.held.is_some();
         std::thread::sleep(if super_speed_involved {
             off_time.max(SS_POWER_OFF_SETTLE)
         } else {
@@ -212,12 +186,24 @@ impl PowerPorts {
         });
 
         // Check before restoring power, while the evidence is still there.
-        if !self.is_gone()? {
+        if !self.is_gone() {
             return Err(Error::PowerOffIneffective {
                 port: self.primary.to_string(),
             });
         }
         Ok(())
+    }
+}
+
+/// What is cut and what is held: `cutting 2-1.4 port 1 (HS), holding down
+/// 3-4 port 1 (SS)`.
+impl std::fmt::Display for PowerPorts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "cutting {:?}", self.primary)?;
+        match &self.held {
+            Some(held) => write!(f, ", holding down {held:?}"),
+            None => write!(f, " (receptacle has no other half)"),
+        }
     }
 }
 
@@ -263,11 +249,11 @@ fn switchable_parent(hubs: &Hubs, bus: u8, path: &[u8]) -> Result<(Hub, u8)> {
 /// be cut with it: VBUS stays on while either half asks for it (USB 3.2 §10.1,
 /// Table 10-2).
 ///
-/// It is port `port` of the hub paired with `primary`'s, because both halves
-/// of a hub number their downstream ports alike (§10.3.3). Which hub that is
-/// comes from [`Pairing`].
+/// It is the same port number on the hub paired with `primary`'s, because
+/// both halves of a hub number their downstream ports alike (§10.3.3). Which
+/// hub that is comes from [`Pairing`].
 ///
-/// Empty when the receptacle has no other half to hold: the hub is a USB 2.0
+/// `None` when the receptacle has no other half to hold: the hub is a USB 2.0
 /// hub or declared alone, or the declared partner has no port of that number.
 ///
 /// # Errors
@@ -276,34 +262,28 @@ fn switchable_parent(hubs: &Hubs, bus: u8, path: &[u8]) -> Result<(Hub, u8)> {
 /// identified, [`Error::PeerNotSwitchable`] if that half is ganged,
 /// [`Error::PeerNotFound`] if its port holds a device of its own, or
 /// [`Error::HubUnreadable`] if it could not be opened.
-fn peer_ports(
-    hubs: &Hubs,
-    pairing: &Pairing,
-    primary: &HubPort,
-    port: u8,
-    target_is_hub: bool,
-) -> Result<Vec<HubPort>> {
+fn peer_port(hubs: &Hubs, pairing: &Pairing, primary: &HubPort) -> Result<Option<HubPort>> {
     let hub = primary.hub();
-    let Some(other) = pairing.other_half(&hub.location) else {
-        if pairing.is_alone(&hub.location) {
-            return Ok(Vec::new());
+    let other = match pairing.verdict(&hub.location) {
+        Verdict::Paired { other, .. } => other,
+        Verdict::DeclaredAlone | Verdict::Usb2Hub => return Ok(None),
+        // A root hub is never a primary, and a hub `Pairing` does not know
+        // is one whose descriptor it could not read; neither can be paired.
+        Verdict::StoodInFor { .. } | Verdict::Unpaired | Verdict::Unknown => {
+            return Err(Error::HubUnpaired {
+                port: primary.to_string(),
+                hub: hub.location.clone(),
+                other_side: hub.other_side(),
+            });
         }
-        return Err(Error::HubUnpaired {
-            port: primary.to_string(),
-            hub: hub.location.clone(),
-            other_side: if hub.is_super_speed() {
-                "USB 2.0"
-            } else {
-                "SuperSpeed"
-            },
-        });
     };
 
+    let port = primary.port();
     let peer_hub = hubs.open_at(other)?;
     // A declared partner may be smaller than the hub - a root hub with fewer
     // ports, say. A receptacle beyond its last port has one half only.
     if port > peer_hub.nports {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     if !peer_hub.per_port_power {
         return Err(Error::PeerNotSwitchable {
@@ -313,11 +293,11 @@ fn peer_ports(
     }
 
     let peer = HubPort::new(peer_hub, port)?;
-    if !peer.is_holdable(target_is_hub) {
+    if !peer.is_holdable_for(primary) {
         return Err(Error::PeerNotFound {
             port: primary.to_string(),
             candidate: peer.to_string(),
         });
     }
-    Ok(vec![peer])
+    Ok(Some(peer))
 }

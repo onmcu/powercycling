@@ -74,7 +74,7 @@ pub enum Error {
         levels: u8,
     },
     /// No hub is enumerated at this sysfs location. The bus topology changed
-    /// during the search, or a `peer` link named a port whose hub is gone.
+    /// during the search, or a declared pair names a hub that is not there.
     #[error("no hub enumerated at {location} - did the bus topology change?")]
     HubMissing {
         /// sysfs location that was looked up, e.g. `2-1.2`.

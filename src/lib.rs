@@ -2,7 +2,7 @@
 #[cfg(not(target_os = "linux"))]
 compile_error!(
     "powercycling is Linux-only: it depends on sysfs USB port devices \
-     (`peer`, `disable`), which no other platform provides"
+     (`disable`) and hub attributes, which no other platform provides"
 );
 
 use std::time::Duration;

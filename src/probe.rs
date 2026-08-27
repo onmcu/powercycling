@@ -4,8 +4,8 @@ use std::io::Write;
 use std::time::Duration;
 
 use crate::error::Result;
-use crate::hub::{Hub, Hubs};
-use crate::pairing::{HubPairs, Pairing};
+use crate::hub::{Hub, Hubs, USB_SS};
+use crate::pairing::{HubPairs, Pairing, Verdict};
 use crate::port::HubPort;
 use crate::sysfs::device_location;
 
@@ -15,6 +15,14 @@ struct Step {
     ports: Vec<HubPort>,
     line: String,
     why: &'static str,
+}
+
+impl Step {
+    /// `2-1.4 port 1 + 3-4 port 1`.
+    fn ports_text(&self) -> String {
+        let names: Vec<String> = self.ports.iter().map(ToString::to_string).collect();
+        names.join(" + ")
+    }
 }
 
 /// What the user typed at a prompt.
@@ -79,7 +87,7 @@ pub fn probe(
 ) -> Result<Option<String>> {
     let hubs = Hubs::enumerate()?;
     let pairing = Pairing::compute(&hubs, pairs);
-    if let Some(other) = pairing.other_half(hub) {
+    if let Verdict::Paired { other, .. } = pairing.verdict(hub) {
         writeln!(
             out,
             "{hub} is already paired with {other} - nothing to probe. To probe it \
@@ -95,12 +103,11 @@ pub fn probe(
     print_plan(&steps, &probed, off_time, out)?;
 
     for (i, step) in steps.iter().enumerate() {
-        let ports: Vec<String> = step.ports.iter().map(ToString::to_string).collect();
         let prompt = format!(
             "step {}/{}: cut {} [Enter=cut, n=skip, q=quit] ",
             i + 1,
             steps.len(),
-            ports.join(" + ")
+            step.ports_text()
         );
         match Answer::parse(&ask(&prompt)?, true) {
             Answer::Quit => return quit(out),
@@ -122,7 +129,7 @@ pub fn probe(
         let found = if i == 0 {
             format!("{probed} cuts VBUS by itself")
         } else {
-            format!("{} share a receptacle", ports.join(" and "))
+            format!("{} share a receptacle", step.ports_text())
         };
         writeln!(
             out,
@@ -183,12 +190,11 @@ fn print_plan(
          plan, most likely first; each step cuts for {off_time:?}, restores, then asks:"
     )?;
     for (i, step) in steps.iter().enumerate() {
-        let ports: Vec<String> = step.ports.iter().map(ToString::to_string).collect();
         writeln!(
             out,
             "   {:>2}. {:<40} => \"{}\"  {}",
             i + 1,
-            ports.join(" + "),
+            step.ports_text(),
             step.line,
             step.why
         )?;
@@ -197,7 +203,7 @@ fn print_plan(
         writeln!(
             out,
             "   (no {} hub that switches power per port has port {} free)",
-            other_side(probed),
+            probed.hub().other_side(),
             probed.port()
         )?;
     }
@@ -212,22 +218,27 @@ fn print_plan(
 fn plan(hubs: &Hubs, pairing: &Pairing, probed: &HubPort) -> Vec<Step> {
     let hub = probed.hub();
     let port = probed.port();
-    let target_is_hub = probed.holds_hub();
-    let depth = |h: &Hub| h.dev.port_numbers().map_or(0, |p| p.len());
 
     let mut candidates: Vec<(HubPort, u8, &'static str)> = hubs
         .iter()
+        // Cheap filters first, from cached descriptors: not the probed hub,
+        // not already settled, opposite speed. Only then open.
         .filter(|dev| {
             let location = device_location(dev);
             location != hub.location
-                && pairing.other_half(&location).is_none()
-                && !pairing.is_declared_alone(&location)
+                && matches!(
+                    pairing.verdict(&location),
+                    Verdict::Unpaired | Verdict::Usb2Hub
+                )
+        })
+        .filter(|dev| {
+            dev.device_descriptor()
+                .is_ok_and(|d| (d.usb_version() >= USB_SS) != hub.is_super_speed())
         })
         .filter_map(|dev| Hub::open(dev.clone()).ok())
-        .filter(|h| h.is_super_speed() != hub.is_super_speed() && h.per_port_power)
-        .filter(|h| port <= h.nports)
+        .filter(|h| h.per_port_power && port <= h.nports)
         .filter_map(|h| HubPort::new(h, port).ok())
-        .filter(|p| p.is_holdable(target_is_hub))
+        .filter(|p| p.is_holdable_for(probed))
         .map(|p| {
             let (rank, why) = likelihood(hub, p.hub());
             (p, rank, why)
@@ -236,7 +247,7 @@ fn plan(hubs: &Hubs, pairing: &Pairing, probed: &HubPort) -> Vec<Step> {
     // The other half of a chip is the same chip: same vendor, same size. Of
     // those, the one nearest the root - a board that splices a hub into one
     // side only puts the other side's hub higher up, never lower.
-    candidates.sort_by_key(|(p, rank, _)| (*rank, depth(p.hub()), p.hub().location.clone()));
+    candidates.sort_by_key(|(p, rank, _)| (*rank, p.hub().depth(), p.hub().location.clone()));
 
     let mut steps = vec![Step {
         ports: vec![probed.clone()],
@@ -265,14 +276,6 @@ const fn likelihood(hub: &Hub, candidate: &Hub) -> (u8, &'static str) {
         (true, false) => (1, "same vendor"),
         (false, true) => (2, "same size"),
         (false, false) => (3, ""),
-    }
-}
-
-fn other_side(port: &HubPort) -> &'static str {
-    if port.is_super_speed() {
-        "USB 2.0"
-    } else {
-        "SuperSpeed"
     }
 }
 
