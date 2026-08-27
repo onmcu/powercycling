@@ -53,6 +53,11 @@ impl HubPort {
         &self.hub
     }
 
+    /// The port number on that hub.
+    pub(crate) const fn port(&self) -> u8 {
+        self.port
+    }
+
     /// Whether something is plugged into this port.
     pub(crate) fn is_occupied(&self) -> bool {
         Path::new(SYSFS_USB).join(self.child_location()).exists()

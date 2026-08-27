@@ -16,18 +16,20 @@ mod port;
 mod power;
 mod probe;
 mod sysfs;
+mod tree;
 
 /// The USB library this crate is built on. [`Device`] and [`Error::Usb`] are
 /// its types, so it is re-exported to spare callers a matching dependency.
 pub use rusb;
 
-pub use debug::{debug_scan, pairing_report};
+pub use debug::debug_scan;
 pub use device::{Device, DeviceId, wait_for_device};
 pub use error::{Error, Result};
 pub use pairing::HubPairs;
 pub use port::HubPort;
 pub use power::PowerPorts;
 pub use probe::probe;
+pub use tree::tree;
 
 /// Timeout for the control transfers this crate issues. They are answered by
 /// the hub itself, so anything slower than this is a failure, not congestion.

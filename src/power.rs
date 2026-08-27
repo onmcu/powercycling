@@ -28,9 +28,6 @@ pub struct PowerPorts {
     /// one on each half of its receptacle (USB 3.2 §10.1), so its other half
     /// legitimately occupies the held port and is cut along with it.
     target_is_hub: bool,
-    /// The device the ports were found for, kept so [`Self::is_gone`] can look
-    /// it up again once its VBUS is off (and the device disconnected).
-    device: DeviceId,
 }
 
 impl PowerPorts {
@@ -58,10 +55,46 @@ impl PowerPorts {
     /// not be identified, [`Error::PeerNotSwitchable`] if it is ganged, or
     /// [`Error::PeerNotFound`] if it holds a device of its own.
     pub fn find(device: &DeviceId, pairs: &HubPairs) -> Result<Self> {
+        Self::find_above(device, 0, pairs)
+    }
+
+    /// Find the ports that cut VBUS to the hub `levels` hubs above `device` -
+    /// and so to everything on that hub, `device` included.
+    ///
+    /// For a carrier board with its own hub, a devboard and measurement
+    /// hardware on it: `find(mcu)` cycles the MCU alone, `find_above(mcu, 1)`
+    /// cycles the whole carrier. Naming the carrier by the MCU's serial is
+    /// what makes this work when several identical carriers - identical hubs,
+    /// no serials of their own - hang off one machine.
+    ///
+    /// `levels == 0` is [`Self::find`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::find`], plus [`Error::NothingAbove`] if there are fewer
+    /// than `levels` hubs between the device and the root hub.
+    pub fn find_above(device: &DeviceId, levels: u8, pairs: &HubPairs) -> Result<Self> {
         // Obtain information about where the device is connected
         let dev = find_device(device)?;
         let bus = dev.bus_number();
-        let path = dev.port_numbers()?;
+        let mut path = dev.port_numbers()?;
+
+        let target_is_hub = if levels == 0 {
+            is_hub(&dev)
+        } else {
+            // Climb: everything in the path above the device is a hub. The
+            // root hub is not a target, so at least one port must remain.
+            let keep = path
+                .len()
+                .checked_sub(usize::from(levels))
+                .filter(|&keep| keep > 0)
+                .ok_or_else(|| Error::NothingAbove {
+                    device: sysfs_location(bus, &path),
+                    levels,
+                })?;
+            path.truncate(keep);
+            true
+        };
 
         let hubs = Hubs::enumerate()?;
 
@@ -69,7 +102,6 @@ impl PowerPorts {
         let (hub, port) = switchable_parent(&hubs, bus, &path)?;
         let primary_hub_port = HubPort::new(hub, port)?;
 
-        let target_is_hub = is_hub(&dev);
         let pairing = Pairing::compute(&hubs, pairs);
         let held = peer_ports(&hubs, &pairing, &primary_hub_port, port, target_is_hub)?;
 
@@ -77,7 +109,6 @@ impl PowerPorts {
             primary: primary_hub_port,
             held,
             target_is_hub,
-            device: device.clone(),
         })
     }
 
@@ -101,19 +132,17 @@ impl PowerPorts {
 
     /// Whether the device is currently absent from the bus.
     ///
+    /// Read from sysfs at the device's location - it is the direct child of
+    /// [`Self::primary`] - rather than looked up by identity, so it works for
+    /// a target that shares its `vid:pid` with others, such as one of several
+    /// identical hubs.
+    ///
     /// # Errors
-    /// - `Ok(true)` if the device is not found
-    /// - `Ok(false)` if the device is found
-    /// - `Err` if an error occurs while searching for the device
+    ///
+    /// None at present; the `Result` is kept for a future check that may need
+    /// the bus.
     pub fn is_gone(&self) -> Result<bool> {
-        match find_device(&self.device) {
-            // Found means it is not gone
-            Ok(_) => Ok(false),
-            // Only return true when it was actually not found
-            Err(Error::NotFound { .. }) => Ok(true),
-            // For all other errors, return that error
-            Err(e) => Err(e),
-        }
+        Ok(!self.primary.is_occupied())
     }
 
     /// Switch the held-down ports.
@@ -222,6 +251,7 @@ fn switchable_parent(hubs: &Hubs, bus: u8, path: &[u8]) -> Result<(Hub, u8)> {
             device: sysfs_location(bus, path),
             hub: chained,
             hub_id,
+            levels: u8::try_from(path.len() - len).unwrap_or(u8::MAX),
         });
     }
     Err(Error::NoSwitchableHub {

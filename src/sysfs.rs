@@ -52,15 +52,19 @@ fn parse_device_class(s: &str) -> Option<u8> {
     u8::from_str_radix(s.trim(), 16).ok()
 }
 
+/// A device's sysfs attribute as trimmed text, or empty if unreadable.
+pub fn read_sysfs(location: &str, attribute: &str) -> String {
+    std::fs::read_to_string(format!("{SYSFS_USB}/{location}/{attribute}"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
 /// Read a device's serial from sysfs, or empty if it publishes none.
 ///
 /// Not a string-descriptor read: that needs usbfs write permission, which would
 /// make discovery require the same privileges as switching.
 pub fn read_serial(dev: &Device) -> String {
-    let loc = device_location(dev);
-    std::fs::read_to_string(format!("{SYSFS_USB}/{loc}/serial"))
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
+    read_sysfs(&device_location(dev), "serial")
 }
 
 #[cfg(test)]

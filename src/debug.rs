@@ -3,26 +3,10 @@
 use std::io::Write;
 
 use crate::device::{Device, DeviceId};
-use crate::hub::Hubs;
-use crate::pairing::{HubPairs, Pairing};
+use crate::pairing::HubPairs;
 use crate::power::PowerPorts;
 use crate::sysfs::{device_location, read_serial};
-
-/// Write every hub, which other hub it is paired with and on what evidence,
-/// to `out` - followed by what to do about any hub left unpaired.
-///
-/// `pairs` is what the machine declares.
-///
-/// # Errors
-///
-/// Only if `out` could not be written to.
-pub fn pairing_report(pairs: &HubPairs, out: &mut impl Write) -> std::io::Result<()> {
-    writeln!(out, "-- hubs and their other halves")?;
-    match Hubs::enumerate() {
-        Ok(hubs) => Pairing::compute(&hubs, pairs).report(out),
-        Err(e) => writeln!(out, "   bus could not be enumerated: {e}"),
-    }
-}
+use crate::tree::tree;
 
 /// Write what each stage of the search sees to `out`.
 ///
@@ -70,7 +54,8 @@ pub fn debug_scan(
         writeln!(out, "   {loc}  serial={found:?}  {verdict}")?;
     }
 
-    pairing_report(pairs, out)?;
+    writeln!(out, "-- usb tree")?;
+    tree(pairs, out)?;
 
     match PowerPorts::find(device, pairs) {
         Err(e) => writeln!(out, "-- search failed: {e}"),

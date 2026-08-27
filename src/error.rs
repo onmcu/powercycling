@@ -39,13 +39,16 @@ pub enum Error {
     /// device on the hub, so it is refused rather than done on the caller's
     /// behalf.
     ///
-    /// To cycle the hub and everything on it deliberately, target the hub:
-    /// `hub_id` is its identity as [`crate::PowerPorts::find`] takes it. For a
-    /// USB 3.x hub this names the half on the device's bus; either half works.
+    /// To cycle the hub and everything on it deliberately, ask for the hub
+    /// above the device with [`crate::PowerPorts::find_above`] - `levels` says
+    /// how many hubs up it is - or target the hub itself by `hub_id`, its
+    /// identity as [`crate::PowerPorts::find`] takes it (for a USB 3.x hub
+    /// the half on the device's bus; either half works).
     #[error(
         "{device} is behind hub {hub}{}, which does not switch power per port; \
-         cutting the port above it would take every device on that hub - \
-         target the hub itself to cycle all of it",
+         cutting the port above it would take every device on that hub. To cycle \
+         that hub and everything on it deliberately, ask for the hub {levels} \
+         level(s) above the device (find_above)",
         hub_id_hint(.hub_id.as_ref())
     )]
     BehindHub {
@@ -56,6 +59,19 @@ pub enum Error {
         hub: String,
         /// That hub's identity, if its descriptor could be read.
         hub_id: Option<DeviceId>,
+        /// How many hubs above the device it is - what
+        /// [`crate::PowerPorts::find_above`] takes to cycle it.
+        levels: u8,
+    },
+    /// [`crate::PowerPorts::find_above`] was asked for more hubs above the
+    /// device than there are below the root hub. Root hub ports are host
+    /// controller ports and are not switched.
+    #[error("{device} has fewer than {levels} switchable hub(s) above it")]
+    NothingAbove {
+        /// sysfs location of the device, e.g. `2-1.2.3.4`.
+        device: String,
+        /// How many levels up were asked for.
+        levels: u8,
     },
     /// No hub is enumerated at this sysfs location. The bus topology changed
     /// during the search, or a `peer` link named a port whose hub is gone.
@@ -95,7 +111,7 @@ pub enum Error {
     /// cutting the port would strand whatever is on it.
     #[error(
         "the other half of {port}'s receptacle should be {candidate}, but that port \
-         holds a device of its own, so the hub pairing is wrong - check `--pairs`"
+         holds a device of its own, so the hub pairing is wrong - check the USB tree"
     )]
     PeerNotFound {
         /// The port that would have been cut.
@@ -110,15 +126,15 @@ pub enum Error {
     ///
     /// The bus does not describe which hubs share receptacles when their
     /// paths differ, so the pair has to be declared once for the machine - see
-    /// [`crate::HubPairs`]. [`crate::pairing_report`] shows every hub and why
-    /// this one is unpaired; [`crate::probe`] finds the pair by watching the
-    /// device's power LED.
+    /// [`crate::HubPairs`]. [`crate::tree`] shows every hub and why this one
+    /// is unpaired; [`crate::probe`] finds the pair by watching the device's
+    /// power LED.
     #[error(
         "{port} is on one half of a USB 3.x hub whose {other_side} half could not \
          be identified, and its receptacles stay powered while either half is on - \
          cutting {port} alone would only disconnect the device, not power it off. \
          Which hubs share receptacles cannot be read from the bus here, so it has \
-         to be declared once for this machine: the pairing report shows why, and \
+         to be declared once for this machine: the USB tree shows why, and \
          probing {hub} with a device that has a power LED finds the pair to declare"
     )]
     HubUnpaired {
@@ -266,15 +282,17 @@ mod tests {
             device: "2-1.2.3.4".to_string(),
             hub: "2-1.2.3".to_string(),
             hub_id: Some(DeviceId::new(0x0bda, 0x5411, None)),
+            levels: 1,
         }
         .to_string();
         assert!(with_id.starts_with("2-1.2.3.4 is behind hub 2-1.2.3 (0bda:5411), "));
-        assert!(with_id.ends_with("target the hub itself to cycle all of it"));
+        assert!(with_id.ends_with("ask for the hub 1 level(s) above the device (find_above)"));
 
         let without = Error::BehindHub {
             device: "2-1.2.3.4".to_string(),
             hub: "2-1.2.3".to_string(),
             hub_id: None,
+            levels: 1,
         }
         .to_string();
         assert!(without.starts_with("2-1.2.3.4 is behind hub 2-1.2.3, "));

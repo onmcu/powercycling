@@ -4,11 +4,13 @@
 //!     cargo run --example cycle -- 0483 374e 0050003A3233511639363634 --debug
 //!     cargo run --example cycle -- 0483 374e 0050003A3233511639363634 --verify
 //!     cargo run --example cycle -- 0483 374e 0050003A3233511639363634 --primary-only
-//!     cargo run --example cycle -- --pairs
+//!     cargo run --example cycle -- --tree
 //!     cargo run --example cycle -- --probe 2-1.2 4
 //!
 //! Every form takes `--pairs-file <path>` for the hub pairs the machine needs
-//! declared (see `HubPairs`); without it, none are.
+//! declared (see `HubPairs`); without it, none are. `--above N` targets the
+//! hub N levels above the device instead - `--above 1` cycles the carrier
+//! board the device sits on, and everything else on it.
 
 use powercycling::{DeviceId, Error, HubPairs, HubPort, PowerPorts};
 use std::collections::BTreeSet;
@@ -29,36 +31,22 @@ fn main() {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
 
-    // `--pairs-file <path>` anywhere in the arguments; none declared without it.
-    let pairs = match args.iter().position(|a| a == "--pairs-file") {
-        Some(i) if i + 1 < args.len() => {
-            let path = args.remove(i + 1);
-            args.remove(i);
-            HubPairs::load(path)?
-        }
-        Some(_) => {
-            eprintln!("--pairs-file needs a path");
-            std::process::exit(2);
-        }
-        None => HubPairs::none(),
-    };
+    // `--pairs-file <path>` and `--above <n>` anywhere in the arguments.
+    let pairs = take_option(&mut args, "--pairs-file")?
+        .map_or_else(|| Ok(HubPairs::none()), HubPairs::load)?;
+    let above: u8 = take_option(&mut args, "--above")?.map_or(Ok(0), |n| n.parse())?;
 
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-        ["--pairs"] => {
-            return Ok(powercycling::pairing_report(
-                &pairs,
-                &mut std::io::stdout(),
-            )?);
-        }
-        ["--probe", hub, port] => return probe(hub, port.parse()?),
+        ["--tree"] => return Ok(powercycling::tree(&pairs, &mut std::io::stdout())?),
+        ["--probe", hub, port] => return probe(hub, port.parse()?, &pairs),
         _ => {}
     }
     let [vid, pid, rest @ ..] = args.as_slice() else {
         eprintln!(
             "usage: cycle <vid-hex> <pid-hex> [serial] [--debug|--verify|--primary-only]\n       \
-             cycle --pairs\n       \
+             cycle --tree\n       \
              cycle --probe <hub> <port>\n       \
-             each with an optional --pairs-file <path>"
+             each with an optional --pairs-file <path>, the first also --above <n>"
         );
         std::process::exit(2);
     };
@@ -84,14 +72,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         )?);
     }
     if has("--verify") {
-        return Ok(verify(&device, &pairs)?);
+        return Ok(verify(&device, above, &pairs)?);
     }
     if has("--primary-only") {
-        return Ok(primary_only(&device, &pairs)?);
+        return Ok(primary_only(&device, above, &pairs)?);
     }
 
     let t0 = Instant::now();
-    let ports = find(&device, &pairs)?;
+    let ports = find(&device, above, &pairs)?;
     let found = t0.elapsed();
     describe(&ports);
 
@@ -110,16 +98,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// `PowerPorts::find`, with the command-line way out spelled out for the one
-/// error whose fix is a declaration rather than a change of target.
-fn find(device: &DeviceId, pairs: &HubPairs) -> powercycling::Result<PowerPorts> {
-    PowerPorts::find(device, pairs).inspect_err(|e| {
-        if let Error::HubUnpaired { hub, .. } = e {
-            eprintln!(
-                "hint: `cycle --pairs` shows the hub pairing, `cycle --probe {hub} <port>` \
-                 finds the missing pair, then pass the file with `--pairs-file <path>`"
-            );
-        }
+/// Remove `--flag <value>` from `args` and return the value, if present.
+fn take_option(args: &mut Vec<String>, flag: &str) -> Result<Option<String>, String> {
+    let Some(i) = args.iter().position(|a| a == flag) else {
+        return Ok(None);
+    };
+    if i + 1 >= args.len() {
+        return Err(format!("{flag} needs a value"));
+    }
+    let value = args.remove(i + 1);
+    args.remove(i);
+    Ok(Some(value))
+}
+
+/// `PowerPorts::find_above`, with the command-line way out spelled out for
+/// the errors whose fix is a flag rather than a change of hardware.
+fn find(device: &DeviceId, above: u8, pairs: &HubPairs) -> powercycling::Result<PowerPorts> {
+    PowerPorts::find_above(device, above, pairs).inspect_err(|e| match e {
+        Error::BehindHub { hub, levels, .. } => eprintln!(
+            "hint: add `--above {}` to cycle {hub} and everything on it",
+            above + levels
+        ),
+        Error::HubUnpaired { hub, .. } => eprintln!(
+            "hint: `cycle --tree` shows the hubs and their pairing, `cycle --probe {hub} \
+             <port>` finds the missing pair, then pass the file with `--pairs-file <path>`"
+        ),
+        _ => {}
     })
 }
 
@@ -139,18 +143,17 @@ fn describe(ports: &PowerPorts) {
 
 /// Find the other half of `hub`'s receptacles by watching the power LED of
 /// whatever is plugged into its `port`; prints the line for the pairs file.
-fn probe(hub: &str, port: u8) -> Result<(), Box<dyn std::error::Error>> {
+fn probe(hub: &str, port: u8, pairs: &HubPairs) -> Result<(), Box<dyn std::error::Error>> {
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
-    let confirm = |question: &str| -> std::io::Result<bool> {
-        print!("{question}");
+    let ask = |prompt: &str| -> std::io::Result<String> {
+        print!("{prompt}");
         std::io::stdout().flush()?;
         let mut answer = String::new();
         stdin.lock().read_line(&mut answer)?;
-        Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
+        Ok(answer)
     };
-    println!("probing {hub} port {port} - watch the power LED of the device on it");
-    powercycling::probe(hub, port, OFF_TIME, &mut out, confirm)?;
+    powercycling::probe(hub, port, OFF_TIME, pairs, &mut out, ask)?;
     Ok(())
 }
 
@@ -170,8 +173,8 @@ fn location(dev: &powercycling::Device) -> String {
 /// If the LED goes dark anyway, this hub gates VBUS on the USB 2.0 port alone
 /// and the whole hold-down mechanism is unnecessary for it. Watch the board,
 /// not the bus: it drops off USB either way.
-fn primary_only(device: &DeviceId, pairs: &HubPairs) -> powercycling::Result<()> {
-    let ports = find(device, pairs)?;
+fn primary_only(device: &DeviceId, above: u8, pairs: &HubPairs) -> powercycling::Result<()> {
+    let ports = find(device, above, pairs)?;
     println!(
         "cutting ONLY {:?}, leaving {} port(s) powered",
         ports.primary(),
@@ -209,9 +212,9 @@ fn bus_snapshot() -> BTreeSet<String> {
 /// definitely kept its power, which is exactly what "did I disturb my other
 /// boards?" asks. Proving the *target* lost VBUS rather than just its link
 /// still needs an LED or a meter.
-fn verify(device: &DeviceId, pairs: &HubPairs) -> powercycling::Result<()> {
+fn verify(device: &DeviceId, above: u8, pairs: &HubPairs) -> powercycling::Result<()> {
     let t = Instant::now();
-    let ports = find(device, pairs)?;
+    let ports = find(device, above, pairs)?;
     println!("found ports in {:?}", t.elapsed());
     describe(&ports);
 

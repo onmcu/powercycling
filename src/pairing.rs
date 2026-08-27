@@ -11,19 +11,23 @@
 //!
 //! 1. The machine's [`HubPairs`] - what the user declared.
 //! 2. Sharing a host controller: the two root hubs of one xHCI controller.
-//! 3. Descent: a hub on port N of a paired hub pairs with the hub on port N
+//! 3. Expansion: a controller whose two root hubs differ in port count, the
+//!    smaller having exactly one port that holds a hub with as many ports as
+//!    the larger root has. Such a board runs one side of its receptacles
+//!    through that hub, so the hub stands in for the smaller root: its port
+//!    N and the larger root's port N are one receptacle.
+//! 4. Descent: a hub on port N of a paired hub pairs with the hub on port N
 //!    of its partner, when the two are of opposite speeds, the same vendor,
 //!    and the same size.
 //!
-//! Rule 3 is what the kernel does to fill its `peer` links, minus the sanity
-//! checks, which is why those links are not consulted: on a board that
-//! splices a USB 2.0-only hub into the USB 2.0 path alone, the kernel's rule
-//! pairs the wrong hubs, and every hub below inherits the mistake. The board
-//! itself is the only source for such a pairing, hence rule 1.
+//! Rule 4 is what the kernel does to fill its `peer` links, minus the sanity
+//! checks, which is why those links are not consulted: on a board of the
+//! rule 3 kind the kernel's rule pairs the wrong hubs, and every hub below
+//! inherits the mistake. Whatever none of the rules covers is the board's
+//! secret, hence rule 1.
 
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use rusb::Version;
@@ -139,13 +143,21 @@ impl FromStr for HubPairs {
     }
 }
 
-/// How two hubs were found to be one package.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Evidence {
+/// How two hubs were found to share receptacles.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Evidence {
     /// Declared in the pairs file.
     Declared,
     /// Root hubs of the same host controller.
     Controller,
+    /// A hub standing in for the single-port root hub `root`, expanding it
+    /// to the `ports` ports of the controller's other root hub.
+    Expansion {
+        /// The single-port root hub the hub sits on.
+        root: String,
+        /// How many ports both the hub and the other root hub have.
+        ports: u8,
+    },
     /// On the same port number of hubs already paired.
     Descent(u8),
 }
@@ -155,7 +167,10 @@ impl std::fmt::Display for Evidence {
         match self {
             Self::Declared => write!(f, "declared"),
             Self::Controller => write!(f, "same host controller"),
-            Self::Descent(port) => write!(f, "port {port} of paired hubs"),
+            Self::Expansion { root, ports } => {
+                write!(f, "expands {root}'s single port to {ports}")
+            }
+            Self::Descent(port) => write!(f, "port {port} of paired parents"),
         }
     }
 }
@@ -167,24 +182,25 @@ struct Node {
     path: Vec<u8>,
     version: Version,
     vid: u16,
-    pid: u16,
-    /// From the hub descriptor, if the hub could be opened.
-    opened: Option<(u8, bool)>,
+    /// `bNbrPorts`, if the hub could be opened.
+    nports: Option<u8>,
+    /// The host controller, for a root hub.
+    controller: Option<PathBuf>,
 }
 
 impl Node {
     fn read(dev: &Device) -> Option<Self> {
         let desc = dev.device_descriptor().ok()?;
+        let location = device_location(dev);
+        let path = dev.port_numbers().ok()?;
         Some(Self {
-            location: device_location(dev),
+            controller: path.is_empty().then(|| controller_of(&location)).flatten(),
+            location,
             bus: dev.bus_number(),
-            path: dev.port_numbers().ok()?,
+            path,
             version: desc.usb_version(),
             vid: desc.vendor_id(),
-            pid: desc.product_id(),
-            opened: Hub::open(dev.clone())
-                .ok()
-                .map(|hub| (hub.nports, hub.per_port_power)),
+            nports: Hub::open(dev.clone()).ok().map(|hub| hub.nports),
         })
     }
 
@@ -207,8 +223,8 @@ impl Node {
     const fn matches(&self, other: &Self) -> bool {
         self.is_super_speed() != other.is_super_speed()
             && self.vid == other.vid
-            && match (self.opened, other.opened) {
-                (Some((n, _)), Some((m, _))) => n == m,
+            && match (self.nports, other.nports) {
+                (Some(n), Some(m)) => n == m,
                 _ => true,
             }
     }
@@ -230,8 +246,11 @@ impl Pairing {
     /// Opens every hub for its descriptor. One that cannot be opened is still
     /// paired if the rules allow, just without the port-count check.
     pub fn compute(hubs: &Hubs, declared: &HubPairs) -> Self {
-        let mut nodes: Vec<Node> = hubs.iter().filter_map(Node::read).collect();
-        // Parents before children, so rule 3 sees a hub's parent already paired.
+        Self::from_nodes(hubs.iter().filter_map(Node::read).collect(), declared)
+    }
+
+    fn from_nodes(mut nodes: Vec<Node>, declared: &HubPairs) -> Self {
+        // Parents before children, so rule 4 sees a hub's parent already paired.
         nodes.sort_by_key(|n| n.path.len());
         let by_location = nodes
             .iter()
@@ -247,12 +266,14 @@ impl Pairing {
         };
         pairing.apply_declared(declared);
         pairing.pair_root_hubs();
+        pairing.pair_by_expansion();
         pairing.pair_by_descent();
         pairing
     }
 
     fn link(&mut self, a: &str, b: &str, evidence: Evidence) {
-        self.pairs.insert(a.to_string(), (b.to_string(), evidence));
+        self.pairs
+            .insert(a.to_string(), (b.to_string(), evidence.clone()));
         self.pairs.insert(b.to_string(), (a.to_string(), evidence));
     }
 
@@ -279,27 +300,86 @@ impl Pairing {
 
     /// Rule 2: the two root hubs of one host controller.
     fn pair_root_hubs(&mut self) {
-        let mut by_controller: HashMap<std::path::PathBuf, Vec<usize>> = HashMap::new();
+        let mut by_controller: HashMap<PathBuf, Vec<usize>> = HashMap::new();
         for (i, node) in self.nodes.iter().enumerate() {
-            if node.is_root()
-                && !self.is_settled(&node.location)
-                && let Some(controller) = controller_of(&node.location)
+            if !self.is_settled(&node.location)
+                && let Some(controller) = &node.controller
             {
-                by_controller.entry(controller).or_default().push(i);
+                by_controller.entry(controller.clone()).or_default().push(i);
             }
         }
-        for roots in by_controller.values() {
-            if let [a, b] = roots[..] {
+        let links: Vec<(String, String)> = by_controller
+            .values()
+            .filter_map(|roots| {
+                let [a, b] = roots[..] else { return None };
                 let (a, b) = (&self.nodes[a], &self.nodes[b]);
-                if a.is_super_speed() != b.is_super_speed() {
-                    let (a, b) = (a.location.clone(), b.location.clone());
-                    self.link(&a, &b, Evidence::Controller);
-                }
-            }
+                (a.is_super_speed() != b.is_super_speed())
+                    .then(|| (a.location.clone(), b.location.clone()))
+            })
+            .collect();
+        for (a, b) in links {
+            self.link(&a, &b, Evidence::Controller);
         }
     }
 
-    /// Rule 3: same port number of hubs already paired.
+    /// Rule 3: a hub standing in for the single-port root hub of a lopsided
+    /// controller.
+    ///
+    /// A receptacle needs a port on each side, so when one root hub has one
+    /// port and the other has several, that side of the receptacles is
+    /// reached through whatever the single port holds. If that is a hub with
+    /// exactly as many ports as the other root, it is the board's way of
+    /// fanning that side out, and its ports line up with the other root's.
+    fn pair_by_expansion(&mut self) {
+        let controller_pairs: Vec<(usize, usize)> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, node)| {
+                let (partner, Evidence::Controller) = self.pairs.get(&node.location)? else {
+                    return None;
+                };
+                let p = *self.by_location.get(partner)?;
+                (i < p).then_some((i, p))
+            })
+            .collect();
+
+        for (a, b) in controller_pairs {
+            let (a, b) = (&self.nodes[a], &self.nodes[b]);
+            let (small, large) = match (a.nports, b.nports) {
+                (Some(1), Some(n)) if n > 1 => (a, b),
+                (Some(n), Some(1)) if n > 1 => (b, a),
+                _ => continue,
+            };
+            let hub_location = child_location(&small.location, small.bus, 1);
+            let Some(&h) = self.by_location.get(&hub_location) else {
+                continue;
+            };
+            let hub = &self.nodes[h];
+            if self.is_settled(&hub_location)
+                || hub.nports != large.nports
+                || hub.is_super_speed() == large.is_super_speed()
+                // A hub whose own other half is on the bus is not a stand-in.
+                || self.nodes.iter().any(|n| {
+                    n.location != hub.location
+                        && !self.is_settled(&n.location)
+                        && hub.matches(n)
+                })
+            {
+                continue;
+            }
+            let evidence = Evidence::Expansion {
+                root: small.location.clone(),
+                ports: large.nports.unwrap_or_default(),
+            };
+            let large = large.location.clone();
+            // The large root's partner becomes the hub; the small root keeps
+            // pointing at its controller sibling, which `verdict` explains.
+            self.link(&hub_location, &large, evidence);
+        }
+    }
+
+    /// Rule 4: same port number of hubs already paired.
     fn pair_by_descent(&mut self) {
         for i in 0..self.nodes.len() {
             let node = &self.nodes[i];
@@ -333,6 +413,11 @@ impl Pairing {
         self.pairs.get(location).map(|(other, _)| other.as_str())
     }
 
+    /// Whether the hub at `location` was declared to have no other half.
+    pub fn is_declared_alone(&self, location: &str) -> bool {
+        self.alone.contains(location)
+    }
+
     /// Whether the hub at `location` is known to have no other half: declared
     /// so, or a USB 2.0 hub.
     pub fn is_alone(&self, location: &str) -> bool {
@@ -343,78 +428,244 @@ impl Pairing {
                 .is_some_and(|&i| !self.nodes[i].may_have_other_half())
     }
 
-    /// Write every hub with its pairing and the evidence for it to `out`,
-    /// followed by what to do about any hub left unpaired.
-    ///
-    /// # Errors
-    ///
-    /// Only if `out` could not be written to.
-    pub fn report(&self, out: &mut impl Write) -> std::io::Result<()> {
-        let mut order: Vec<&Node> = self.nodes.iter().collect();
-        order.sort_by(|a, b| (a.bus, &a.path).cmp(&(b.bus, &b.path)));
-
-        let mut unpaired = Vec::new();
-        for node in order {
-            let ports = node.opened.map_or_else(
-                || "unreadable       ".to_string(),
-                |(n, ppps)| format!("{n:>2} ports  {}", if ppps { "ppps  " } else { "ganged" }),
-            );
-            let verdict = if let Some((other, evidence)) = self.pairs.get(&node.location) {
-                format!("<-> {other:<10} {evidence}")
-            } else if self.alone.contains(&node.location) {
-                "no other half (declared)".to_string()
-            } else if !node.may_have_other_half() {
-                "no other half (USB 2.0 hub)".to_string()
-            } else {
-                unpaired.push(node);
-                "UNPAIRED".to_string()
-            };
-            writeln!(
-                out,
-                "   {:<10} USB {}.{}  {:04x}:{:04x}  {ports}  {verdict}",
-                node.location,
-                node.version.major(),
-                node.version.minor(),
-                node.vid,
-                node.pid,
-            )?;
-        }
-
-        for hub in &self.declared_absent {
-            writeln!(
-                out,
-                "   note: {hub} is declared as a pair but not on the bus"
-            )?;
-        }
-
-        if !unpaired.is_empty() {
-            writeln!(out)?;
-            for node in &unpaired {
-                writeln!(
-                    out,
-                    "   {} declares USB {}.{}, so it is one half of a USB 3.x hub, but \
-                     the other half could not be identified.",
-                    node.location,
-                    node.version.major(),
-                    node.version.minor()
-                )?;
+    /// What is known about the other half of the hub at `location`.
+    pub fn verdict(&self, location: &str) -> Verdict<'_> {
+        if let Some((other, evidence)) = self.pairs.get(location) {
+            // A root hub whose sibling was taken over by a stand-in hub.
+            if let Some((via, Evidence::Expansion { .. })) = self.pairs.get(other)
+                && via != location
+            {
+                return Verdict::StoodInFor { other, via };
             }
-            writeln!(
-                out,
-                "   Both halves of a receptacle keep its VBUS on, so a device on such a \
-                 hub cannot be power-cycled until\n   \
-                 the pair is known. The bus cannot tell; probe the hub with a device \
-                 that has a power LED and declare\n   \
-                 the pair it finds in your hub pairs."
-            )?;
+            Verdict::Paired { other, evidence }
+        } else if self.alone.contains(location) {
+            Verdict::DeclaredAlone
+        } else if let Some(&i) = self.by_location.get(location) {
+            if self.nodes[i].may_have_other_half() {
+                Verdict::Unpaired
+            } else {
+                Verdict::Usb2Hub
+            }
+        } else {
+            Verdict::Unknown
         }
-        Ok(())
+    }
+
+    /// The hubs with another half that could not be identified.
+    pub fn unpaired(&self) -> Vec<&str> {
+        self.nodes
+            .iter()
+            .filter(|n| matches!(self.verdict(&n.location), Verdict::Unpaired))
+            .map(|n| n.location.as_str())
+            .collect()
+    }
+
+    /// Declared hubs that are not on the bus.
+    pub fn declared_absent(&self) -> &[String] {
+        &self.declared_absent
+    }
+}
+
+/// What is known about a hub's other half.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict<'a> {
+    /// Paired with the hub at this location.
+    Paired {
+        /// sysfs location of the other half.
+        other: &'a str,
+        /// How the pair was found.
+        evidence: &'a Evidence,
+    },
+    /// A single-port root hub whose controller sibling `other` is paired with
+    /// the hub `via` on that port instead - the hub stands in for this one.
+    StoodInFor {
+        /// The controller sibling.
+        other: &'a str,
+        /// The hub on this root's single port.
+        via: &'a str,
+    },
+    /// Declared to have no other half.
+    DeclaredAlone,
+    /// A USB 2.0 hub, which has no `SuperSpeed` half.
+    Usb2Hub,
+    /// Has another half that could not be identified.
+    Unpaired,
+    /// Not a hub this pairing knows of.
+    Unknown,
+}
+
+impl std::fmt::Display for Verdict<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Paired { other, evidence } => write!(f, "<-> {other} ({evidence})"),
+            Self::StoodInFor { other, via } => {
+                write!(f, "same host controller as {other}; {via} stands in for it")
+            }
+            Self::DeclaredAlone => write!(f, "no other half (declared)"),
+            Self::Usb2Hub => write!(f, "no other half (USB 2.0 hub)"),
+            Self::Unpaired => write!(f, "UNPAIRED - other half unknown"),
+            Self::Unknown => write!(f, "unreadable"),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A hub on the bus, for building topologies without hardware.
+    fn hub(location: &str, version: (u8, u8), vid: u16, nports: u8) -> Node {
+        let (bus, path) = location.strip_prefix("usb").map_or_else(
+            || {
+                let (bus, path) = location.split_once('-').unwrap();
+                (
+                    bus.parse().unwrap(),
+                    path.split('.').map(|p| p.parse().unwrap()).collect(),
+                )
+            },
+            |bus| (bus.parse().unwrap(), Vec::new()),
+        );
+        Node {
+            controller: path
+                .is_empty()
+                .then(|| PathBuf::from(format!("controller-of-bus-{}", bus / 2))),
+            location: location.to_string(),
+            bus,
+            path,
+            version: Version(version.0, version.1, 0),
+            vid,
+            nports: Some(nports),
+        }
+    }
+
+    const LINUX: u16 = 0x1d6b;
+    const VIA: u16 = 0x2109;
+    const REALTEK: u16 = 0x0bda;
+
+    /// Raspberry Pi CM5 IO board: the controller's USB 2.0 root has one
+    /// port, holding a 4-port VIA hub; its `SuperSpeed` root has four ports.
+    /// Three identical Realtek hubs hang below, one carrying two more.
+    fn cm5() -> Vec<Node> {
+        vec![
+            hub("usb2", (2, 0), LINUX, 1),
+            hub("usb3", (3, 0), LINUX, 4),
+            hub("2-1", (2, 1), VIA, 4),
+            hub("2-1.4", (2, 1), REALTEK, 4),
+            hub("2-1.4.3", (2, 1), REALTEK, 4),
+            hub("2-1.4.4", (2, 1), REALTEK, 4),
+            hub("3-4", (3, 2), REALTEK, 4),
+            hub("3-4.3", (3, 2), REALTEK, 4),
+            hub("3-4.4", (3, 2), REALTEK, 4),
+        ]
+    }
+
+    #[test]
+    fn expansion_pairs_the_stand_in_hub_with_the_larger_root() {
+        let pairing = Pairing::from_nodes(cm5(), &HubPairs::none());
+        assert_eq!(pairing.other_half("2-1"), Some("usb3"));
+        assert_eq!(pairing.other_half("usb3"), Some("2-1"));
+        assert_eq!(
+            pairing.verdict("2-1"),
+            Verdict::Paired {
+                other: "usb3",
+                evidence: &Evidence::Expansion {
+                    root: "usb2".to_string(),
+                    ports: 4,
+                },
+            }
+        );
+        assert_eq!(
+            pairing.verdict("usb2"),
+            Verdict::StoodInFor {
+                other: "usb3",
+                via: "2-1",
+            }
+        );
+        // Everything below follows by descent, identical hubs included.
+        assert_eq!(pairing.other_half("2-1.4"), Some("3-4"));
+        assert_eq!(pairing.other_half("3-4.3"), Some("2-1.4.3"));
+        assert_eq!(pairing.other_half("2-1.4.4"), Some("3-4.4"));
+        assert!(pairing.unpaired().is_empty());
+    }
+
+    #[test]
+    fn a_declared_pair_wins_over_expansion() {
+        let declared = HubPairs::none().pair("2-1", "usb3");
+        let pairing = Pairing::from_nodes(cm5(), &declared);
+        assert_eq!(
+            pairing.verdict("2-1"),
+            Verdict::Paired {
+                other: "usb3",
+                evidence: &Evidence::Declared,
+            }
+        );
+        assert_eq!(pairing.other_half("2-1.4"), Some("3-4"));
+    }
+
+    #[test]
+    fn symmetric_pc_pairs_by_descent_only() {
+        // Both roots have four ports; a Realtek hub in receptacle 1 shows up
+        // on both. Nothing to expand.
+        let pairing = Pairing::from_nodes(
+            vec![
+                hub("usb2", (2, 0), LINUX, 4),
+                hub("usb3", (3, 0), LINUX, 4),
+                hub("2-1", (2, 1), REALTEK, 4),
+                hub("3-1", (3, 2), REALTEK, 4),
+            ],
+            &HubPairs::none(),
+        );
+        assert_eq!(pairing.other_half("usb2"), Some("usb3"));
+        assert_eq!(
+            pairing.verdict("2-1"),
+            Verdict::Paired {
+                other: "3-1",
+                evidence: &Evidence::Descent(1),
+            }
+        );
+    }
+
+    #[test]
+    fn expansion_needs_matching_port_counts_and_no_twin() {
+        // Single-port root, but the hub on it has 7 ports, not the root's 4.
+        let pairing = Pairing::from_nodes(
+            vec![
+                hub("usb2", (2, 0), LINUX, 1),
+                hub("usb3", (3, 0), LINUX, 4),
+                hub("2-1", (2, 1), VIA, 7),
+            ],
+            &HubPairs::none(),
+        );
+        assert_eq!(pairing.other_half("2-1"), None);
+        assert_eq!(pairing.unpaired(), vec!["2-1"]);
+
+        // Counts match, but the hub's own SuperSpeed twin is on the bus, so
+        // it is a real USB 3.x hub in a real receptacle, not a stand-in.
+        let pairing = Pairing::from_nodes(
+            vec![
+                hub("usb2", (2, 0), LINUX, 1),
+                hub("usb3", (3, 0), LINUX, 4),
+                hub("2-1", (2, 1), VIA, 4),
+                hub("3-2", (3, 2), VIA, 4),
+            ],
+            &HubPairs::none(),
+        );
+        assert_eq!(pairing.other_half("2-1"), None);
+    }
+
+    #[test]
+    fn a_plain_usb2_hub_has_no_other_half() {
+        let pairing = Pairing::from_nodes(
+            vec![
+                hub("usb2", (2, 0), LINUX, 4),
+                hub("usb3", (3, 0), LINUX, 4),
+                hub("2-1", (2, 0), 0x1a40, 4),
+            ],
+            &HubPairs::none(),
+        );
+        assert_eq!(pairing.verdict("2-1"), Verdict::Usb2Hub);
+        assert!(pairing.unpaired().is_empty());
+    }
 
     #[test]
     fn parses_pairs_comments_and_none() {

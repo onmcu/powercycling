@@ -37,6 +37,8 @@ pub struct Hub {
     pub bus: u8,
     /// USB version
     pub version: Version,
+    /// Vendor ID. Both halves of a USB 3.x hub carry the same one.
+    pub vid: u16,
     /// `bNbrPorts`, the number of ports this hub has
     pub nports: u8,
     /// Whether the hub supports PPPS
@@ -74,6 +76,7 @@ impl Hub {
             bus: dev.bus_number(),
             location,
             version,
+            vid: desc.vendor_id(),
             dev,
             nports,
             per_port_power,
