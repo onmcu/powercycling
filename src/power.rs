@@ -96,11 +96,20 @@ impl PowerPorts {
 
     /// Whether the device is currently absent from the bus.
     ///
-    /// Only a completed search that found nothing counts; a bus that could not
-    /// be enumerated says nothing about the device.
+    /// Returns
+    /// - `Ok(true)` if the device is not found
+    /// - `Ok(false)` if the device is found
+    /// - `Err` if an error occurs while searching for the device
     #[must_use]
-    pub fn is_gone(&self) -> bool {
-        matches!(find_device(&self.device), Err(Error::NotFound { .. }))
+    pub fn is_gone(&self) -> Result<bool> {
+        match find_device(&self.device) {
+            // Found means it is not gone
+            Ok(_) => Ok(false),
+            // Only return true when it was actually not found
+            Err(Error::NotFound { .. }) => Ok(true),
+            // For all other errors, return that error
+            Err(e) => Err(e),
+        }
     }
 
     /// Switch the held-down ports.
@@ -167,7 +176,7 @@ impl PowerPorts {
         });
 
         // Check before restoring power, while the evidence is still there.
-        if !self.is_gone() {
+        if !self.is_gone()? {
             return Err(Error::PowerOffIneffective {
                 port: self.primary.to_string(),
             });
