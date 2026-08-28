@@ -98,7 +98,7 @@ The following is the escalation ladder, from "fix the call" to "fix the hardware
 - **`BehindHub`:** the device's direct "ancestor hub" does not switch power per port
   (chained hubs usually report _ganged_). Above that hub sits a port that _does_ switch,
   but it may feed other devices. The crate refuses to take every device connected to that
-  hub down on your behalf. The error names the hub and how many levels up it is; the example
+  hub down on your behalf. The error names the hub and how many levels up it is; `main.rs`
   prints the exact `--above N` to add.
 
   _Fix:_
@@ -129,11 +129,10 @@ The following is the escalation ladder, from "fix the call" to "fix the hardware
     identical hubs with no serials of their own, so the hub's VID/PID alone would be `Ambiguous`.
 
 - **`HubUnpaired`:** the device's hub is one half of a USB 3.x hub, and the crate
-  cannot tell which hub is the other half. Both halves keep the receptacle  powered,
-  so cutting one alone would only disconnect the device.
-  To prevent a "false positive" cut, the crate cuts nothing.
-  This happens on boards that route the two halves through unrelated hubs in a way the
-  crate's rules (see [How it works](#how-it-works)) do not recognize.
+  cannot tell which hub is the other half. Both halves keep the receptacle powered,
+  so cutting one alone would only disconnect the device. The crate cuts nothing.
+  This happens on boards that route the two halves in a way the crate's rules
+  (see [How it works](#how-it-works)) do not recognize.
 
   The fix is one declaration, usually only necessary once per machine:
 
@@ -168,7 +167,7 @@ The following is the escalation ladder, from "fix the call" to "fix the hardware
         Ok(())
     }
     ```
-   The example takes `--pairs-file cm5.pairs`.
+   `main.rs` takes `--pairs-file cm5.pairs`.
    One line covers every hub chained below the pair, no matter how many identical
    ones there are. If a hub's receptacles have _no other half_ at all, declare it
    as `<hub> none`.
@@ -187,11 +186,11 @@ The following is the escalation ladder, from "fix the call" to "fix the hardware
   _Fix:_ use a hub that does.
 
 - **`LED stays lit, but Ok`:** the port was disabled and VBUS was not cut. Either
-  the hub does not gate VBUS on that port (check by measuring). Or make sure
-  the hold-down of the peer's port is doing its job:
+  the hub does not gate VBUS on that port (measure), or the peer's port is not
+  held down properly. To tell them apart:
 
   ```text
-  cargo run --example cycle -- <vid> <pid> <serial> --primary-only
+  cargo run -- <vid> <pid> <serial> --primary-only
   ```
 
   which deliberately cuts the device's port alone. LED dark ⇒ this hub gates
@@ -218,12 +217,11 @@ fn main() -> Result<(), powercycling::Error> {
 }
 ```
 
-Find the ports *before* cutting: once VBUS drops, the device can no longer be
-looked up. `PowerPorts::cycle` cuts, waits, checks the device is gone, and
-restores — always, so a failure never leaves a port held down. When a
-`SuperSpeed` port is involved the off period is stretched to at least 200 ms,
-as such a port's power-off is not immediate; the minimum is absorbed into the
-caller's off time, never added to it.
+Find the ports _before_ cutting: once VBUS drops, the device can no longer be
+looked up. `PowerPorts::cycle` cuts, waits, checks that the device is gone, and
+restores. It restores on failure, too, so no port is left held down. If a
+`SuperSpeed` port is involved, the off time is at least 200 ms, since such a
+port's power-off is not immediate.
 
 ## Command-line reference
 
@@ -246,8 +244,7 @@ four also `--above <n>` to target the hub `n` levels above the device.
 `PowerPorts::find` takes the port on the hub directly above the device and
 requires that hub to do per-port power switching. A hub without switches
 (_ganged_) still _accepts_ `PORT_POWER` and answers it by disabling the port.
-Although this causes the device to disappear from the bus, it leaves VBUS on
-the whole time, no actual power cycling.
+The device disappears from the bus, but VBUS stays on: no power cycle.
 
 Hubs chained behind a PPPS-capable hub usually report _ganged_ switching.
 The port that does cut VBUS then sits further up and feeds the entire chain of hubs,
@@ -291,8 +288,8 @@ The crate does this in order of confidence:
 
 1. **Declared:** what the caller says in a `HubPairs`.
 2. **Same host controller:** the two root hubs of one xHCI controller are
-   the two halves of its receptacles. This seems to always be the case so far,
-   but lacks proof from the specification at the moment.
+   the two halves of its receptacles. True on every machine seen so far; the
+   specification does not guarantee it.
 3. **Expansion:** some boards route one side of their receptacles through a
    hub. The tell: one root of the controller has a *single* port, and on it
    hangs a hub with exactly as many ports as the other root (and no twin of
@@ -308,13 +305,12 @@ The crate does this in order of confidence:
    there are belong to that hub. So it stands in for the small root:
    `2-1 <-> usb3`, port N to port N. (The same with the sides swapped.)
 4. **Descent:** paired hubs have paired ports (§10.3.3), so the hub on port N
-   of one is the other half of the hub on port N of its peer. Walking
-   down from a paired hub-pair, this deterministically finds every hub below it,
-   three identical ones or not. Before pairing, the two are checked for what two halves of
-   one chip must share: opposite speeds, the same vendor, the same number
-   of ports. The check finds nothing on its own; it only erros when something is off.
-   A hub that fails it stays unpaired (HubUnpaired) rather than being paired with
-   a wrong hub
+   of one is the other half of the hub on port N of its peer. Walking down from
+   a paired hub-pair, this finds every hub below it, three identical ones or not.
+   Before pairing, the two are checked for what the halves of one chip must
+   share: opposite speeds, the same vendor, the same number of ports. The check
+   finds nothing on its own; it only rejects. A hub that fails it stays unpaired
+   (`HubUnpaired`) rather than being paired with a wrong hub.
 
 Once a hub is paired, so is everything chained below it, and the held-down port
 is simply port N of the peer.
@@ -365,29 +361,29 @@ The STLINK on `2-1.4.1.1` sits on a plain USB 2.0 hub that is ganged, so cycling
 alone is refused (`BehindHub`); `--above 1` cycles that hub (the carrier) through
 `2-1.4 port 1` and `3-4 port 1` together.
 
-The "stranger" the check guards against is a hub spliced into one side only,
+What rule 4's check guards against is a hub spliced into one side only,
 without rule 3's single-port tell:
+
 ```text
 usb2 (4 ports) ─ port 2 ─ 2-2 (4 ports) ─ port 1 ─ port 2 ─ port 3 ─ port 4
-                                            │        │        │        │    the same four receptacles
-usb3 (4 ports) ────────────────────────── port 1 ─ port 2 ─ port 3 ─ port 4
+                                              │        │        │        │    the same four receptacles
+usb3 (4 ports) ───────────────────────── port 1 ─ port 2 ─ port 3 ─ port 4
 ```
-On the bus, 2-2 looks like an ordinary hub plugged into receptacle 2, and
-rule 4 would offer it whatever sits on usb3 port 2. The check rejects that
-unless it happens to be a look-alike hub; the honest answer is a declaration,
-2-2 usb3, which is why declarations exist.
 
-The kernel's own `peer` links are *not* used:
-they are more or less rule 4 without the sanity checks and can lead to wrong
-conclusions on a board illustrated at step 3:
+On the bus, `2-2` looks like an ordinary hub in receptacle 2, and rule 4 would
+pair it with whatever hub sits on `usb3` port 2. The check rejects that unless
+it is a look-alike hub. This board needs a declaration: `2-2 usb3`.
 
-```
+The kernel's own `peer` links are _not_ used. They are rule 4 without the
+check, and on the board of rule 3 they pair the wrong hubs:
+
+```text
 $ readlink usb3/3-0:1.0/usb3-port1/peer
 ../../../usb2/2-0:1.0/usb2-port1
 ```
-Which suggests a mapping of `usb3 <-> usb2` while in practice it would be
-`usb3 <-> 2-1`. So the `peer` might pair the wrong hubs, with every hub below
-inheriting the mistake.
+
+This says `usb3 <-> usb2`; in practice it is `usb3 <-> 2-1`. Every hub below
+would inherit the mistake.
 
 ### When the device is a hub
 
@@ -408,9 +404,7 @@ excludes:
 > SuperSpeed and USB 2.0 connections. **Host controller ports may have different
 > requirements.** (§10.1)
 
-So a device plugged straight into the machine yields `NoSwitchableHub`. (On the
-Linux machines tried so far, root hub ports do carry a kernel `peer` link, so
-root receptacles could in principle be handled; the crate does not, by choice.)
+So a device plugged straight into the machine yields `NoSwitchableHub`.
 
 ### What cannot be checked
 
@@ -420,8 +414,8 @@ link in `eSS.Disabled` (§10.3.1.1), so a device still enumerated means the hub
 accepted `PORT_POWER` without acting on it.
 
 The converse cannot be checked over USB. Table 10-2 says VBUS "May be off" when
-both halves are down — not that it shall be — and a hub that keeps it on to
-support power applications from the port conforms. That is what step 2 is for.
+both halves are down, not that it shall be. A hub that keeps it on conforms.
+That is what step 2 is for.
 
 ## Specification references
 
