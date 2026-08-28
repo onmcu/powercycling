@@ -137,40 +137,40 @@ The following is the escalation ladder, from "fix the call" to "fix the hardware
   The fix is one declaration, usually only necessary once per machine:
 
   1. Check the tree: which hub is paired with which – and why this one is not:
-    ```text
-    cargo run -- --tree
-    ```
+     ```text
+     cargo run -- --tree
+     ```
   2. Plug something with a power LED into the unpaired hub and find its other
-    half:
-    ```text
-    cargo run -- --probe 2-1.2 4
-    ```
-    The probe prints its plan: first, cycle the port alone, then together with each
-    candidate, most likely pair first.
-    Then it runs the plan one step per `Enter`-press: cut, wait, restore, then ask
-    "LED went dark?". Press `y` when it did; the probe prints the line to declare.
+     half:
+     ```text
+     cargo run -- --probe 2-1.2 4
+     ```
+     The probe prints its plan: first, cycle the port alone, then together with each
+     candidate, most likely pair first.
+     Then it runs the plan one step per `Enter`-press: cut, wait, restore, then ask
+     "LED went dark?". Press `y` when it did; the probe prints the line to declare.
   3. Declare it. The crate reads no file on its own; keep the pairs wherever your
-    configuration lives and pass them in:
-    ```text
-    # cm5.pairs - one line per pair of hubs that share receptacles
-    2-1 usb3
-    ```
-    ```rust,no_run
-    use powercycling::HubPairs;
+     configuration lives and pass them in:
+     ```text
+     # cm5.pairs - one line per pair of hubs that share receptacles
+     2-1 usb3
+     ```
+     ```rust,no_run
+     use powercycling::HubPairs;
 
-    fn main() -> Result<(), powercycling::Error> {
-        let from_file = HubPairs::load("cm5.pairs")?;
-        let from_text: HubPairs = "2-1 usb3".parse()?;
-        let built = HubPairs::none().pair("2-1", "usb3");
-        assert_eq!(from_file, from_text);
-        assert_eq!(from_text, built);
-        Ok(())
-    }
-    ```
-   `main.rs` takes `--pairs-file cm5.pairs`.
-   One line covers every hub chained below the pair, no matter how many identical
-   ones there are. If a hub's receptacles have _no other half_ at all, declare it
-   as `<hub> none`.
+     fn main() -> Result<(), powercycling::Error> {
+         let from_file = HubPairs::load("cm5.pairs")?;
+         let from_text: HubPairs = "2-1 usb3".parse()?;
+         let built = HubPairs::none().pair("2-1", "usb3");
+         assert_eq!(from_file, from_text);
+         assert_eq!(from_text, built);
+         Ok(())
+     }
+     ```
+     `main.rs` takes `--pairs-file cm5.pairs`.
+     One line covers every hub chained below the pair, no matter how many identical
+     ones there are. If a hub's receptacles have _no other half_ at all, declare it
+     as `<hub> none`.
 
 - **`PeerNotSwitchable`:** the other half was identified, but switches power in
   ganged mode, so it cannot be cut without taking its neighbours. This receptacle

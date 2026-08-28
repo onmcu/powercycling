@@ -195,8 +195,7 @@ fn bus_snapshot() -> BTreeSet<String> {
 /// dropped which should not have.
 ///
 /// This measures USB enumeration, not VBUS. A device that stays enumerated
-/// definitely kept its power, which is exactly what "did I disturb my other
-/// boards?" asks. Proving the *target* lost VBUS rather than just its link
+/// kept its power. Proving the *target* lost VBUS rather than only its link
 /// still needs an LED or a meter.
 fn verify(device: &DeviceId, above: u8, pairs: &HubPairs) -> powercycling::Result<()> {
     let t = Instant::now();

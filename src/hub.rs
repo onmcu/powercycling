@@ -188,11 +188,8 @@ pub fn is_hub(dev: &Device) -> bool {
         .is_ok_and(|d| d.class_code() == LIBUSB_CLASS_HUB)
 }
 
-/// Every hub enumerated on the bus, unopened.
-///
-/// Only [`Hubs::enumerate`] builds one, and it filters on the hub device class,
-/// so holding a `Hubs` is evidence that filter ran: nothing in it is an
-/// ordinary device.
+/// Every hub enumerated on the bus, unopened. Every entry has the hub device
+/// class.
 pub struct Hubs(Vec<Device>);
 
 impl Hubs {

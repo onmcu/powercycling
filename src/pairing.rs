@@ -13,18 +13,18 @@
 //! 2. Sharing a host controller: the two root hubs of one xHCI controller.
 //! 3. Expansion: a controller whose two root hubs differ in port count, the
 //!    smaller having exactly one port that holds a hub with as many ports as
-//!    the larger root has. Such a board runs one side of its receptacles
-//!    through that hub, so the hub stands in for the smaller root: its port
-//!    N and the larger root's port N are one receptacle.
+//!    the larger root, and no twin of its own on the bus. Such a board runs
+//!    one side of its receptacles through that hub, so the hub stands in for
+//!    the smaller root: its port N and the larger root's port N are one
+//!    receptacle.
 //! 4. Descent: a hub on port N of a paired hub pairs with the hub on port N
-//!    of its partner, when the two are of opposite speeds, the same vendor,
-//!    and the same size.
+//!    of its peer, if the two are of opposite speeds, the same vendor and
+//!    the same size. The check only rejects; a hub that fails it stays
+//!    unpaired.
 //!
-//! Rule 4 is what the kernel does to fill its `peer` links, minus the sanity
-//! checks, which is why those links are not consulted: on a board of the
-//! rule 3 kind the kernel's rule pairs the wrong hubs, and every hub below
-//! inherits the mistake. Whatever none of the rules covers is the board's
-//! secret, hence rule 1.
+//! The kernel's `peer` links are rule 4 without the check. On a board of the
+//! rule 3 kind they pair the wrong hubs, and every hub below inherits the
+//! mistake, so they are not used.
 //!
 //! Pairing reads cached descriptors and sysfs only; no hub is opened.
 
@@ -46,9 +46,8 @@ const NONE: &str = "none";
 
 /// Hub pairs declared for a machine, for what the bus cannot tell.
 ///
-/// Needed only where a board wires the two halves of its receptacles to hubs
-/// that share no ancestry in a way the rules do not recognise. One pair per
-/// such board oddity; everything below the pair is derived.
+/// Needed only where a board wires the two halves of its receptacles in a way
+/// the pairing rules do not recognize. Everything below a pair is derived.
 ///
 /// The pairs are the caller's to supply: built with [`Self::pair`] and
 /// [`Self::alone`], parsed from text with [`str::parse`], or loaded from a
@@ -149,7 +148,7 @@ impl FromStr for HubPairs {
 /// How two hubs were found to share receptacles.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Evidence {
-    /// Declared in the pairs file.
+    /// Declared in the [`HubPairs`].
     Declared,
     /// Root hubs of the same host controller.
     Controller,

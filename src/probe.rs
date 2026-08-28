@@ -53,9 +53,9 @@ impl Answer {
 /// together with each candidate in turn and asking whether the device on it
 /// lost power.
 ///
-/// Something with a power LED must be plugged into that port. Nothing about a
-/// VBUS drop is visible over USB - the device leaves the bus whether its power
-/// went or only its link - so the observer is the only instrument.
+/// Something with a power LED must be plugged into that port: the device
+/// leaves the bus whether its power went or only its link, so only the LED
+/// tells.
 ///
 /// The plan is printed first, most likely pair first: candidates are the hubs
 /// of the opposite speed that switch power per port, are not paired already,

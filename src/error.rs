@@ -39,11 +39,8 @@ pub enum Error {
     /// device on the hub, so it is refused rather than done on the caller's
     /// behalf.
     ///
-    /// To cycle the hub and everything on it deliberately, ask for the hub
-    /// above the device with [`crate::PowerPorts::find_above`] - `levels` says
-    /// how many hubs up it is - or target the hub itself by `hub_id`, its
-    /// identity as [`crate::PowerPorts::find`] takes it (for a USB 3.x hub
-    /// the half on the device's bus; either half works).
+    /// To cycle the hub and everything on it deliberately, use
+    /// [`crate::PowerPorts::find_above`] with `levels`.
     #[error(
         "{device} is behind hub {hub}{}, which does not switch power per port; \
          cutting the port above it would take every device on that hub. To cycle \
@@ -75,7 +72,10 @@ pub enum Error {
     },
     /// No hub is enumerated at this sysfs location. The bus topology changed
     /// during the search, or a declared pair names a hub that is not there.
-    #[error("no hub enumerated at {location} - did the bus topology change?")]
+    #[error(
+        "no hub enumerated at {location} - did the bus topology change, or does a \
+         declared pair name a hub that is not there?"
+    )]
     HubMissing {
         /// sysfs location that was looked up, e.g. `2-1.2`.
         location: String,
@@ -104,11 +104,10 @@ pub enum Error {
         /// Its peer, which is not individually switchable.
         peer: String,
     },
-    /// The other half of the receptacle holds a device, which it cannot: one
-    /// receptacle holds one device - unless that device is a hub, whose two
-    /// halves sit one on each port (USB 3.2 §10.1), in which case the other
-    /// half must hold a hub. Anything else means the pairing is wrong, and
-    /// cutting the port would strand whatever is on it.
+    /// The other half of the receptacle holds a device of its own, which one
+    /// receptacle cannot (unless the device is a hub, whose two halves sit one
+    /// on each port, USB 3.2 §10.1). The pairing is wrong, and cutting the
+    /// port would strand whatever is on it.
     #[error(
         "the other half of {port}'s receptacle should be {candidate}, but that port \
          holds a device of its own, so the hub pairing is wrong - check the USB tree"
@@ -120,22 +119,18 @@ pub enum Error {
         candidate: String,
     },
     /// The port is on one half of a USB 3.x hub whose other half could not be
-    /// identified, and the receptacle's VBUS stays on while either half
-    /// powers it. Cutting this port alone would disconnect the device without
-    /// powering it off, so nothing is cut.
+    /// identified. VBUS stays on while either half powers the receptacle, so
+    /// cutting this port alone would only disconnect the device; nothing is
+    /// cut.
     ///
-    /// The bus does not describe which hubs share receptacles when their
-    /// paths differ, so the pair has to be declared once for the machine - see
-    /// [`crate::HubPairs`]. [`crate::tree`] shows every hub and why this one
-    /// is unpaired; [`crate::probe`] finds the pair by watching the device's
-    /// power LED.
+    /// The pair has to be declared once for the machine, see
+    /// [`crate::HubPairs`]. [`crate::tree`] shows every hub and its pairing;
+    /// [`crate::probe`] finds the pair by watching a device's power LED.
     #[error(
         "{port} is on one half of a USB 3.x hub whose {other_side} half could not \
-         be identified, and its receptacles stay powered while either half is on - \
-         cutting {port} alone would only disconnect the device, not power it off. \
-         Which hubs share receptacles cannot be read from the bus here, so it has \
-         to be declared once for this machine: the USB tree shows why, and \
-         probing {hub} with a device that has a power LED finds the pair to declare"
+         be identified; cutting it alone would only disconnect the device, not \
+         power it off. Declare the pair for this machine: the USB tree shows the \
+         hubs, probing {hub} with a device that has a power LED finds it"
     )]
     HubUnpaired {
         /// The port that would have been cut.
@@ -183,16 +178,11 @@ pub enum Error {
         usbfs: rusb::Error,
     },
     /// Every port feeding the receptacle was switched off, but the device is
-    /// still enumerated.
+    /// still enumerated: a powered-off port disables its link (USB 3.2
+    /// §10.3.1.1), so the hub accepted `PORT_POWER` without acting on it.
     ///
-    /// A powered-off port holds its link in `eSS.Disabled` (USB 3.2 §10.3.1.1),
-    /// so a device that stays on the bus means the hub accepted `PORT_POWER`
-    /// without acting on it.
-    ///
-    /// The converse does not hold: a device leaving the bus proves the port was
-    /// switched, not that VBUS dropped. With both halves off Table 10-2 only
-    /// permits VBUS removal ("May be off"), and a hub that keeps it on for
-    /// power applications conforms.
+    /// The converse does not hold: a device leaving the bus proves the port
+    /// was switched, not that VBUS dropped (Table 10-2: "May be off").
     #[error(
         "{port} was powered off but the device is still enumerated - \
          the hub accepted PORT_POWER without acting on it \

@@ -39,7 +39,7 @@ impl PowerPorts {
     /// not switch power per port, the port that does sits further up and
     /// feeds that hub whole; `find` refuses with [`Error::BehindHub`] rather
     /// than cutting every device on the hub. To cycle a hub and everything on
-    /// it, name the hub.
+    /// it, use [`Self::find_above`].
     ///
     /// # Errors
     ///
@@ -214,8 +214,8 @@ impl std::fmt::Display for PowerPorts {
 /// clearing `PORT_POWER` disconnects the port without dropping VBUS. The port
 /// that does cut VBUS is then further up and feeds the chained hub whole, so
 /// cutting it takes every device on that hub. That is refused rather than done
-/// on the caller's behalf: [`Error::BehindHub`] names the hub, and naming it as
-/// the device cycles all of it deliberately.
+/// on the caller's behalf: [`Error::BehindHub`] names the hub and how many
+/// levels up it is, which [`PowerPorts::find_above`] takes to cycle all of it.
 ///
 /// The walk stops below the root hub. Root hub ports are host controller ports,
 /// which the specification's hub chapter does not cover (USB 3.2 §10.1).

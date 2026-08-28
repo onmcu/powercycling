@@ -34,6 +34,12 @@ impl HubPort {
         self.hub.is_super_speed()
     }
 
+    /// sysfs location of the hub this port belongs to, e.g. `2-1.2.3`.
+    #[must_use]
+    pub fn hub_location(&self) -> &str {
+        &self.hub.location
+    }
+
     /// sysfs location a device plugged into this port would have, e.g.
     /// `2-1.2.3.4`. Everything at or below it loses power with the port.
     #[must_use]
@@ -53,8 +59,9 @@ impl HubPort {
         &self.hub
     }
 
-    /// The port number on that hub.
-    pub(crate) const fn port(&self) -> u8 {
+    /// The port number on its hub.
+    #[must_use]
+    pub const fn port(&self) -> u8 {
         self.port
     }
 

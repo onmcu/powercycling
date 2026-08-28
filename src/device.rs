@@ -15,9 +15,6 @@ pub type Device = rusb::Device<GlobalContext>;
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// The identity a device is looked up by.
-///
-/// The serial is owned because the identity outlives the lookup:
-/// [`crate::PowerPorts`] re-checks the device once its VBUS is gone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceId {
     /// Vendor ID.
@@ -102,11 +99,9 @@ pub fn find_device(id: &DeviceId) -> Result<Device> {
     }
 }
 
-/// Wait for a device to appear, polling until `timeout`.
-///
-/// Polled rather than slept: how long a device takes to come back varies with
-/// hub debounce, its own reset and firmware boot, and any enumeration retry,
-/// so a fixed sleep is either too short or needlessly long.
+/// Wait for a device to appear, polling until `timeout`. Polled, because how
+/// long a device takes to come back varies with hub debounce, reset, firmware
+/// boot and enumeration retries.
 ///
 /// The device is on the bus when this returns, which is not the same as
 /// usable: udev may still be applying permissions to its usbfs node, and a
