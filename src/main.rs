@@ -1,11 +1,11 @@
 //! Power-cycle one device from the command line.
 //!
-//!     cargo run --example cycle -- 0483 374e 0050003A3233511639363634
-//!     cargo run --example cycle -- 0483 374e 0050003A3233511639363634 --debug
-//!     cargo run --example cycle -- 0483 374e 0050003A3233511639363634 --verify
-//!     cargo run --example cycle -- 0483 374e 0050003A3233511639363634 --primary-only
-//!     cargo run --example cycle -- --tree
-//!     cargo run --example cycle -- --probe 2-1.2 4
+//!     cargo run -- 0483 374e 0050003A3233511639363634
+//!     cargo run -- 0483 374e 0050003A3233511639363634 --debug
+//!     cargo run -- 0483 374e 0050003A3233511639363634 --verify
+//!     cargo run -- 0483 374e 0050003A3233511639363634 --primary-only
+//!     cargo run -- --tree
+//!     cargo run -- --probe 2-1.2 4
 //!
 //! Every form takes `--pairs-file <path>` for the hub pairs the machine needs
 //! declared (see `HubPairs`); without it, none are. `--above N` targets the
@@ -43,9 +43,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let [vid, pid, rest @ ..] = args.as_slice() else {
         eprintln!(
-            "usage: cycle <vid-hex> <pid-hex> [serial] [--debug|--verify|--primary-only]\n       \
-             cycle --tree\n       \
-             cycle --probe <hub> <port>\n       \
+            "usage: <vid-hex> <pid-hex> [serial] [--debug|--verify|--primary-only]\n       \
+             --tree\n       \
+             --probe <hub> <port>\n       \
              each with an optional --pairs-file <path>, the first also --above <n>"
         );
         std::process::exit(2);
@@ -120,7 +120,7 @@ fn find(device: &DeviceId, above: u8, pairs: &HubPairs) -> powercycling::Result<
             above + levels
         ),
         Error::HubUnpaired { hub, .. } => eprintln!(
-            "hint: `cycle --tree` shows the hubs and their pairing, `cycle --probe {hub} \
+            "hint: `--tree` shows the hubs and their pairing, `--probe {hub} \
              <port>` finds the missing pair, then pass the file with `--pairs-file <path>`"
         ),
         _ => {}
