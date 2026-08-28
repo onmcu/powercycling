@@ -1,30 +1,5 @@
-//! Pairing the two logical hubs of a USB 3.x hub.
-//!
-//! A USB 3.x hub is a USB 2.0 hub and a `SuperSpeed` hub in one package
-//! (USB 3.2 §10.1), enumerated as two devices on two buses. Once the two are
-//! known to be one package, their ports pair by number: "the port numbers
-//! assigned to a specific port by the hub shall be consistent between the USB
-//! 2.0 hub and Enhanced `SuperSpeed` hub" (§10.3.3). So the receptacle is
-//! identified by pairing hubs, and never by guessing at ports.
-//!
-//! Hubs are paired by, in order of trust:
-//!
-//! 1. The machine's [`HubPairs`] - what the user declared.
-//! 2. Sharing a host controller: the two root hubs of one xHCI controller.
-//! 3. Expansion: a controller whose two root hubs differ in port count, the
-//!    smaller having exactly one port that holds a hub with as many ports as
-//!    the larger root, and no twin of its own on the bus. Such a board runs
-//!    one side of its receptacles through that hub, so the hub stands in for
-//!    the smaller root: its port N and the larger root's port N are one
-//!    receptacle.
-//! 4. Descent: a hub on port N of a paired hub pairs with the hub on port N
-//!    of its peer, if the two are of opposite speeds, the same vendor and
-//!    the same size. The check only rejects; a hub that fails it stays
-//!    unpaired.
-//!
-//! The kernel's `peer` links are rule 4 without the check. On a board of the
-//! rule 3 kind they pair the wrong hubs, and every hub below inherits the
-//! mistake, so they are not used.
+//! Pairing the two logical hubs of a USB 3.x hub. The rules are documented
+//! on [`HubPairs`]; this module applies them in that order, one method each.
 //!
 //! Pairing reads cached descriptors and sysfs only; no hub is opened.
 
@@ -47,7 +22,8 @@ const NONE: &str = "none";
 /// Hub pairs declared for a machine, for what the bus cannot tell.
 ///
 /// Needed only where a board wires the two halves of its receptacles in a way
-/// the pairing rules do not recognize. Everything below a pair is derived.
+/// the [rules](#how-hubs-are-paired) do not recognize. Everything below a
+/// pair is derived.
 ///
 /// The pairs are the caller's to supply: built with [`Self::pair`] and
 /// [`Self::alone`], parsed from text with [`str::parse`], or loaded from a
@@ -64,6 +40,132 @@ const NONE: &str = "none";
 /// # SuperSpeed side straight to the controller.
 /// 2-1 usb3
 /// ```
+///
+/// # Why hubs are paired
+///
+/// A USB 3.x receptacle is one socket carrying two USB links: a USB 2.0 hub
+/// and a `SuperSpeed` hub each own a port on it. A device uses one of them and
+/// leaves the other empty; a USB 3.x _hub_ occupies both. The socket has one
+/// VBUS pin, and it is on while either port is powered:
+///
+/// > If either the USB 2.0 hub or Enhanced `SuperSpeed` hub controllers
+/// > requires a downstream port to be powered, power is turned on for the
+/// > port. (USB 3.2 §10.1; normative in Table 10-2)
+///
+/// Cutting only the half the device sits on drops it off the bus, not off
+/// power: the debug session dies, the MCU keeps running. Both halves have to
+/// be down at once.
+///
+/// Port _numbers_ are known: "the port numbers assigned to a specific port by
+/// the hub shall be consistent between the USB 2.0 hub and Enhanced
+/// `SuperSpeed` hub" (§10.3.3). So the question is which _hub_ is the other
+/// half of this one.
+///
+/// # How hubs are paired
+///
+/// In order of confidence:
+///
+/// 1. **Declared:** what this `HubPairs` says.
+/// 2. **Same host controller:** the two root hubs of one xHCI controller are
+///    the two halves of its receptacles. True on every machine seen so far;
+///    the specification does not guarantee it.
+/// 3. **Expansion:** some boards route one side of their receptacles through
+///    a hub. The tell: one root of the controller has a _single_ port, and on
+///    it hangs a hub with exactly as many ports as the other root (and no
+///    twin of its own on the bus):
+///
+///    ```text
+///    usb2 (1 port) ── 2-1 (4 ports) ─ port 1 ─ port 2 ─ port 3 ─ port 4
+///                                        │        │        │        │     the same four receptacles
+///    usb3 (4 ports) ───────────────── port 1 ─ port 2 ─ port 3 ─ port 4
+///    ```
+///
+///    Every receptacle needs a port on each side, and the only USB 2.0 ports
+///    there are belong to that hub. So it stands in for the small root:
+///    `2-1 <-> usb3`, port N to port N. (The same with the sides swapped.)
+/// 4. **Descent:** paired hubs have paired ports (§10.3.3), so the hub on
+///    port N of one is the other half of the hub on port N of its peer.
+///    Walking down from a paired hub-pair, this finds every hub below it,
+///    three identical ones or not. Before pairing, the two are checked for
+///    what the halves of one chip must share: opposite speeds, the same
+///    vendor, the same number of ports. The check finds nothing on its own;
+///    it only rejects. A hub that fails it stays unpaired
+///    ([`Error::HubUnpaired`]) rather than being paired with a wrong hub.
+///
+/// Once a hub is paired, so is everything chained below it, and the held-down
+/// port is port N of the peer. [`crate::tree`] shows it: switching mode,
+/// other half and how it was found, and what sits on every port. A Raspberry
+/// Pi CM5 IO board with one Realtek hub in receptacle 4 and two more chained
+/// below it:
+///
+/// ```text
+/// usb2         1d6b:0002  "xHCI Host Controller"  USB 2.00  1 ports  ppps    same host controller as usb3; 2-1 stands in for it
+/// └─ port 1: 2-1          2109:3431  "USB2.0 Hub"  USB 2.10  4 ports  ganged  <-> usb3 (expands usb2's single port to 4)
+///    ├─ port 1: -
+///    ├─ port 2: -
+///    ├─ port 3: -
+///    └─ port 4: 2-1.4        0bda:5411  "USB2.1 Hub"  USB 2.10  4 ports  ppps    <-> 3-4 (port 4 of paired parents)
+///       ├─ port 1: 2-1.4.1      1a40:0101  "USB 2.0 Hub"  USB 2.00  4 ports  ganged  no other half (USB 2.0 hub)
+///       │  ├─ port 1: 2-1.4.1.1    0483:374e  "STLINK-V3"  serial 0050003A3233511639363634
+///       │  ├─ port 2: -
+///       │  ├─ port 3: -
+///       │  └─ port 4: -
+///       ├─ port 2: -
+///       ├─ port 3: 2-1.4.3      0bda:5411  "USB2.1 Hub"  USB 2.10  4 ports  ppps    <-> 3-4.3 (port 3 of paired parents)
+///       │  └─ …
+///       └─ port 4: 2-1.4.4      0bda:5411  "USB2.1 Hub"  USB 2.10  4 ports  ppps    <-> 3-4.4 (port 4 of paired parents)
+///          └─ …
+/// usb3         1d6b:0003  "xHCI Host Controller"  USB 3.00  4 ports  ppps    <-> 2-1 (expands usb2's single port to 4)
+/// ├─ port 1: -
+/// ├─ port 2: -
+/// ├─ port 3: -
+/// └─ port 4: 3-4          0bda:0411  "USB3.2 Hub"  USB 3.20  4 ports  ppps    <-> 2-1.4 (port 4 of paired parents)
+///    ├─ port 1: -
+///    ├─ port 2: -
+///    ├─ port 3: 3-4.3        0bda:0411  "USB3.2 Hub"  USB 3.20  4 ports  ppps    <-> 2-1.4.3 (port 3 of paired parents)
+///    │  └─ …
+///    └─ port 4: 3-4.4        0bda:0411  "USB3.2 Hub"  USB 3.20  4 ports  ppps    <-> 2-1.4.4 (port 4 of paired parents)
+///       └─ …
+/// ```
+///
+/// **How to read it:** the USB 2.0 side of the controller (`usb2`) has a
+/// single port. It feeds a 4-port hub whose own `SuperSpeed` half is nowhere
+/// on the bus. So the board runs the USB 2.0 lines of its four receptacles
+/// through that hub, but the `SuperSpeed` lines go straight to the host
+/// controller's (`usb3`) four ports (rule 3). Below that, every hub pairs
+/// with its twin by port number (rule 4), three identical hubs or not. The
+/// STLINK on `2-1.4.1.1` sits on a plain USB 2.0 hub that is ganged, so
+/// cycling it alone is refused ([`Error::BehindHub`]);
+/// [`PowerPorts::find_above`](crate::PowerPorts::find_above) with one level
+/// cycles that hub (the carrier) through `2-1.4 port 1` and `3-4 port 1`
+/// together.
+///
+/// # What the rules cannot cover
+///
+/// What rule 4's check guards against is a hub spliced into one side only,
+/// without rule 3's single-port tell:
+///
+/// ```text
+/// usb2 (4 ports) ─ port 2 ─ 2-2 (4 ports) ─ port 1 ─ port 2 ─ port 3 ─ port 4
+///                                               │        │        │        │    the same four receptacles
+/// usb3 (4 ports) ───────────────────────── port 1 ─ port 2 ─ port 3 ─ port 4
+/// ```
+///
+/// On the bus, `2-2` looks like an ordinary hub in receptacle 2, and rule 4
+/// would pair it with whatever hub sits on `usb3` port 2. The check rejects
+/// that unless it is a look-alike hub. This board needs a declaration:
+/// `2-2 usb3`. [`crate::probe`] finds it by watching a power LED.
+///
+/// The kernel's own `peer` links are _not_ used. They are rule 4 without the
+/// check, and on the board of rule 3 they pair the wrong hubs:
+///
+/// ```text
+/// $ readlink usb3/3-0:1.0/usb3-port1/peer
+/// ../../../usb2/2-0:1.0/usb2-port1
+/// ```
+///
+/// This says `usb3 <-> usb2`; in practice it is `usb3 <-> 2-1`. Every hub
+/// below would inherit the mistake.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HubPairs {
     pairs: Vec<(String, String)>,

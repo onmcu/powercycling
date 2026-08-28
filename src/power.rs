@@ -16,6 +16,11 @@ use crate::sysfs::sysfs_location;
 const SS_POWER_OFF_SETTLE: Duration = Duration::from_millis(200);
 
 /// The ports that must be switched to cut VBUS to one device.
+///
+/// One port for a USB 2.0 receptacle. Two for a USB 3.x receptacle, whose
+/// VBUS stays on while either of its halves has its port powered (USB 3.2
+/// §10.1, Table 10-2): the device's port, and port N of the hub paired with
+/// its own. How hubs are paired is documented on [`HubPairs`].
 #[derive(Debug, Clone)]
 pub struct PowerPorts {
     /// The port feeding the device, on the hub directly above it.
