@@ -199,11 +199,11 @@ impl Hubs {
     ///
     /// Whatever enumerating the bus returns.
     pub fn enumerate() -> rusb::Result<Self> {
-        Ok(Self::of(&rusb::devices()?))
+        Ok(Self::from_devices(&rusb::devices()?))
     }
 
     /// The hubs among an already enumerated bus.
-    pub fn of(devices: &DeviceList<GlobalContext>) -> Self {
+    pub fn from_devices(devices: &DeviceList<GlobalContext>) -> Self {
         Self(devices.iter().filter(is_hub).collect())
     }
 

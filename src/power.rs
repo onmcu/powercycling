@@ -237,7 +237,7 @@ fn switchable_parent(hubs: &Hubs, bus: u8, path: &[u8]) -> Result<(Hub, u8)> {
         let chained = sysfs_location(bus, &path[..len]);
         let hub_id = hubs
             .device_at(&chained)
-            .and_then(|dev| DeviceId::of(dev).ok());
+            .and_then(|dev| DeviceId::from_device(dev).ok());
         return Err(Error::BehindHub {
             device: sysfs_location(bus, path),
             hub: chained,

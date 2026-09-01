@@ -65,7 +65,7 @@ pub fn tree(pairs: &HubPairs, out: &mut impl Write) -> std::io::Result<()> {
         Ok(devices) => devices,
         Err(e) => return writeln!(out, "bus could not be enumerated: {e}"),
     };
-    let pairing = Pairing::compute(&Hubs::of(&devices), pairs);
+    let pairing = Pairing::compute(&Hubs::from_devices(&devices), pairs);
     let entries: Vec<Entry> = devices.iter().filter_map(|d| Entry::read(&d)).collect();
     let by_location: HashMap<&str, &Entry> =
         entries.iter().map(|e| (e.location.as_str(), e)).collect();
@@ -79,8 +79,10 @@ pub fn tree(pairs: &HubPairs, out: &mut impl Write) -> std::io::Result<()> {
     for hub in pairing.declared_absent() {
         writeln!(out, "note: {hub} is declared as a pair but not on the bus")?;
     }
-    let unpaired = pairing.unpaired();
-    if !unpaired.is_empty() {
+
+    if let unpaired = pairing.unpaired()
+        && !unpaired.is_empty()
+    {
         writeln!(
             out,
             "\n{} one half of a USB 3.x hub whose other half could not be identified. \
@@ -131,13 +133,16 @@ fn write_hub(
         || {
             let mut found: Vec<u8> = by_location
                 .values()
+                // Same bus and one layer below (path len +1)
                 .filter(|e| e.bus == hub.bus && e.path.len() == hub.path.len() + 1)
+                // The Entry's path without the last layer must match the hub's path
                 .filter(|e| e.path[..hub.path.len()] == hub.path[..])
                 .filter_map(|e| e.path.last().copied())
                 .collect();
             found.sort_unstable();
             found
         },
+        // If hub is Some, collect the numbers 1..nPorts to a vec
         |(n, _)| (1..=n).collect(),
     );
     let last = ports.last().copied();

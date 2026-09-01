@@ -44,7 +44,7 @@ impl DeviceId {
     /// # Errors
     ///
     /// [`rusb::Error`] if the device descriptor could not be read.
-    pub fn of(dev: &Device) -> rusb::Result<Self> {
+    pub fn from_device(dev: &Device) -> rusb::Result<Self> {
         let desc = dev.device_descriptor()?;
         let serial = read_serial(dev);
         Ok(Self {
