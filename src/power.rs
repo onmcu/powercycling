@@ -34,15 +34,15 @@ pub struct PowerPorts {
 impl PowerPorts {
     /// Find the ports that must be switched to cut VBUS to `device`.
     ///
-    /// `pairs` declares which hubs share receptacles where the bus cannot
-    /// tell - [`HubPairs::none`] on a board that needs nothing declared.
+    /// `pairs` declares which two hubs share receptacles,
+    /// [`HubPairs::none`] on a board that needs nothing declared.
     ///
-    /// Call this before cutting power: once VBUS drops, the device leaves the
+    /// Call this **before** cutting power: once VBUS drops, the device leaves the
     /// bus and can no longer be looked up by serial.
     ///
     /// Only the device's own port is ever cut. If the hub it hangs off does
-    /// not switch power per port, the port that does sits further up and
-    /// feeds that hub whole; `find` refuses with [`Error::BehindHub`] rather
+    /// not switch power per port, the port that does must sit further up and
+    /// feeds the entire hub; `find` refuses with [`Error::BehindHub`] rather
     /// than cutting every device on the hub. To cycle a hub and everything on
     /// it, use [`Self::find_above`].
     ///
@@ -59,8 +59,8 @@ impl PowerPorts {
         Self::find_above(device, 0, pairs)
     }
 
-    /// Find the ports that cut VBUS to the hub `levels` hubs above `device` -
-    /// and so to everything on that hub, `device` included.
+    /// Find the ports that cut VBUS to the hub `levels` hubs above `device`.
+    /// This cuts power everything on that hub, including `device`.
     ///
     /// For a carrier board with its own hub, a devboard and measurement
     /// hardware on it: `find(mcu)` cycles the MCU alone, `find_above(mcu, 1)`
@@ -190,7 +190,8 @@ impl PowerPorts {
             off_time
         });
 
-        // Check before restoring power, while the evidence is still there.
+        // Check before power can be restored by the caller, i.e., while the
+        // evidence whether the device is gone is still there.
         if !self.is_gone() {
             return Err(Error::PowerOffIneffective {
                 port: self.primary.to_string(),
@@ -215,39 +216,58 @@ impl std::fmt::Display for PowerPorts {
 /// The hub directly above `bus`-`path`, which has to switch power per port,
 /// and the port of it leading down to the device.
 ///
-/// Hubs chained behind a capable one commonly report ganged switching, where
-/// clearing `PORT_POWER` disconnects the port without dropping VBUS. The port
-/// that does cut VBUS is then further up and feeds the chained hub whole, so
-/// cutting it takes every device on that hub. That is refused rather than done
-/// on the caller's behalf: [`Error::BehindHub`] names the hub and how many
-/// levels up it is, which [`PowerPorts::find_above`] takes to cycle all of it.
+/// Hubs chained behind a PPPS-capable one commonly report _ganged_ switching,
+/// where clearing `PORT_POWER` disconnects the port without dropping VBUS.
+/// The port that does cut VBUS is then further up and feeds the entire chained
+/// hub, so cutting it takes down _every_ device on that hub.
+/// That is refused rather than done  on the caller's behalf: [`Error::BehindHub`]
+/// names the hub and how many levels up it is, which [`PowerPorts::find_above`]
+/// takes to cycle all of it.
 ///
 /// The walk stops below the root hub. Root hub ports are host controller ports,
 /// which the specification's hub chapter does not cover (USB 3.2 §10.1).
 fn switchable_parent(hubs: &Hubs, bus: u8, path: &[u8]) -> Result<(Hub, u8)> {
-    for len in (2..=path.len()).rev() {
-        let hub = hubs.open_at(&sysfs_location(bus, &path[..len - 1]))?;
-        if !hub.per_port_power {
-            continue;
-        }
-        if len == path.len() {
-            return Ok((hub, path[len - 1]));
-        }
-        // The nearest switchable port feeds a chained hub, not the device.
-        let chained = sysfs_location(bus, &path[..len]);
-        let hub_id = hubs
-            .device_at(&chained)
-            .and_then(|dev| DeviceId::from_device(dev).ok());
-        return Err(Error::BehindHub {
-            device: sysfs_location(bus, path),
-            hub: chained,
-            hub_id,
-            levels: u8::try_from(path.len() - len).unwrap_or(u8::MAX),
-        });
+    let device = sysfs_location(bus, path);
+
+    let Some((depth, hub)) = nearest_switchable_hub(hubs, bus, path)? else {
+        return Err(Error::NoSwitchableHub { device });
+    };
+    let port = path[depth];
+
+    // Directly above the device: that is the port to cut.
+    if depth + 1 == path.len() {
+        return Ok((hub, port));
     }
-    Err(Error::NoSwitchableHub {
-        device: sysfs_location(bus, path),
+
+    // The port feeds a chained hub, not the device.
+    let chained = sysfs_location(bus, &path[..=depth]);
+    let hub_id = hubs
+        .device_at(&chained)
+        .and_then(|dev| DeviceId::from_device(dev).ok());
+    Err(Error::BehindHub {
+        device,
+        hub: chained,
+        hub_id,
+        levels: u8::try_from(path.len() - depth - 1)
+            .expect("USB limits the tree to 7 tiers, so the level count fits a u8"),
     })
+}
+
+/// The nearest hub above `path` that switches power per port, and its depth:
+/// the hub sits at `path[..depth]`, its port leading down is `path[depth]`.
+/// The root hub (`depth == 0`) is not a candidate.
+///
+/// # Errors
+///
+/// [`Error::HubUnreadable`] if a hub on the way up could not be opened.
+fn nearest_switchable_hub(hubs: &Hubs, bus: u8, path: &[u8]) -> Result<Option<(usize, Hub)>> {
+    for depth in (1..path.len()).rev() {
+        let hub = hubs.open_at(&sysfs_location(bus, &path[..depth]))?;
+        if hub.per_port_power {
+            return Ok(Some((depth, hub)));
+        }
+    }
+    Ok(None)
 }
 
 /// The port on the other half of the receptacle `primary` feeds, which has to

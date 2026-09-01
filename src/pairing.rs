@@ -182,7 +182,7 @@ impl HubPairs {
         }
     }
 
-    /// Read pairs from a file in the text format.
+    /// Read pairs from a file in the [text format](Self#text-format).
     ///
     /// # Errors
     ///
@@ -198,14 +198,14 @@ impl HubPairs {
             .parse()
     }
 
-    /// Declare that port N of `a` and port N of `b` share a receptacle.
+    /// Add a mapping: port N of `a` and port N of `b` share a receptacle.
     #[must_use]
     pub fn pair(mut self, a: &str, b: &str) -> Self {
         self.pairs.push((a.to_string(), b.to_string()));
         self
     }
 
-    /// Declare that `hub`'s receptacles have no other half.
+    /// Add an empty mapping: `hub`'s receptacles have **no** other half.
     #[must_use]
     pub fn alone(mut self, hub: &str) -> Self {
         self.alone.push(hub.to_string());
@@ -216,7 +216,7 @@ impl HubPairs {
 impl FromStr for HubPairs {
     type Err = Error;
 
-    /// Parse the text format.
+    /// Parse the [text format](Self#text-format).
     ///
     /// # Errors
     ///
@@ -224,23 +224,30 @@ impl FromStr for HubPairs {
     fn from_str(text: &str) -> Result<Self> {
         let mut pairs = Self::none();
         for (i, raw) in text.lines().enumerate() {
-            let line = raw.split('#').next().unwrap_or_default().trim();
+            // Drop the comment, i.e., anything after the first `#`
+            let line = raw.split_once('#').map_or(raw, |(before, _)| before);
+            // Blank lines and comment-only lines declare nothing.
+            let line = line.trim();
             if line.is_empty() {
                 continue;
             }
+            // Errors quote the line as written, comment included, numbered
+            // from 1 as editors do.
             let syntax = || Error::PairsSyntax {
                 line: i + 1,
                 text: raw.to_string(),
             };
+            // Exactly two words: `a b`, `a none` or `none a`.
             let mut words = line.split_whitespace();
             let (Some(a), Some(b), None) = (words.next(), words.next(), words.next()) else {
                 return Err(syntax());
             };
             match (a, b) {
+                // `none none` names no hub, `a a` pairs a hub with itself.
                 (NONE, NONE) => return Err(syntax()),
-                (NONE, hub) | (hub, NONE) => pairs.alone.push(hub.to_string()),
+                (NONE, hub) | (hub, NONE) => pairs = pairs.alone(hub),
                 (a, b) if a == b => return Err(syntax()),
-                (a, b) => pairs.pairs.push((a.to_string(), b.to_string())),
+                (a, b) => pairs = pairs.pair(a, b),
             }
         }
         Ok(pairs)
@@ -333,6 +340,7 @@ enum Status {
 
 /// What pairing needs to know about one hub.
 struct Node {
+    /// sysfs location of a device, e.g. `2-1.2.1.1`, or `usb2` for a root hub.
     location: String,
     bus: u8,
     path: Vec<u8>,
@@ -389,7 +397,6 @@ impl Node {
 /// Every hub on the bus and which is the other half of which.
 pub struct Pairing {
     nodes: Vec<Node>,
-    by_location: HashMap<String, usize>,
     status: HashMap<String, Status>,
     /// Declared hubs that are not on the bus.
     declared_absent: Vec<String>,
@@ -405,14 +412,8 @@ impl Pairing {
     fn from_nodes(mut nodes: Vec<Node>, declared: &HubPairs) -> Self {
         // Parents before children, so rule 4 sees a hub's parent already paired.
         nodes.sort_by_key(|n| n.path.len());
-        let by_location = nodes
-            .iter()
-            .enumerate()
-            .map(|(i, n)| (n.location.clone(), i))
-            .collect();
         let mut pairing = Self {
             nodes,
-            by_location,
             status: HashMap::new(),
             declared_absent: Vec::new(),
         };
@@ -435,6 +436,11 @@ impl Pairing {
         }
     }
 
+    /// The hub at `location`, if it is on the bus.
+    fn node(&self, location: &str) -> Option<&Node> {
+        self.nodes.iter().find(|n| n.location == location)
+    }
+
     fn is_settled(&self, location: &str) -> bool {
         self.status.contains_key(location)
     }
@@ -442,14 +448,14 @@ impl Pairing {
     fn apply_declared(&mut self, declared: &HubPairs) {
         for (a, b) in &declared.pairs {
             for hub in [a, b] {
-                if !self.by_location.contains_key(hub) {
+                if self.node(hub).is_none() {
                     self.declared_absent.push(hub.clone());
                 }
             }
             self.link(a, b, &Evidence::Declared);
         }
         for hub in &declared.alone {
-            if !self.by_location.contains_key(hub) {
+            if self.node(hub).is_none() {
                 self.declared_absent.push(hub.clone());
             }
             self.status.insert(hub.clone(), Status::DeclaredAlone);
@@ -458,23 +464,28 @@ impl Pairing {
 
     /// Rule 2: the two root hubs of one host controller.
     fn pair_root_hubs(&mut self) {
-        let mut by_controller: HashMap<PathBuf, Vec<usize>> = HashMap::new();
-        for (i, node) in self.nodes.iter().enumerate() {
+        // Group the root hubs (the only nodes with a controller) by the host
+        // controller they belong to, skipping those a declaration already settled.
+        let mut by_controller: HashMap<&Path, Vec<&Node>> = HashMap::new();
+        for node in &self.nodes {
             if !self.is_settled(&node.location)
                 && let Some(controller) = &node.controller
             {
-                by_controller.entry(controller.clone()).or_default().push(i);
+                by_controller.entry(controller).or_default().push(node);
             }
         }
+        // A controller with exactly two roots of opposite speed - one USB 2.0,
+        // one SuperSpeed - has a pair. Anything else is left alone.
         let links: Vec<(String, String)> = by_controller
             .values()
             .filter_map(|roots| {
                 let [a, b] = roots[..] else { return None };
-                let (a, b) = (&self.nodes[a], &self.nodes[b]);
                 (a.is_super_speed() != b.is_super_speed())
                     .then(|| (a.location.clone(), b.location.clone()))
             })
             .collect();
+        // Record the pairs. Done after the scan: `link` mutates `status`,
+        // which the scan above reads.
         for (a, b) in links {
             self.link(&a, &b, &Evidence::Controller);
         }
@@ -489,11 +500,12 @@ impl Pairing {
     /// exactly as many ports as the other root, it is the board's way of
     /// fanning that side out, and its ports line up with the other root's.
     fn pair_by_expansion(&mut self) {
-        let controller_pairs: Vec<(usize, usize)> = self
+        // The root hub pairs (as locations) found by rule 2; the loop below
+        // mutates `status`, so the scan cannot hold references.
+        let controller_pairs: Vec<(String, String)> = self
             .nodes
             .iter()
-            .enumerate()
-            .filter_map(|(i, node)| {
+            .filter_map(|node| {
                 let Status::Paired {
                     other,
                     evidence: Evidence::Controller,
@@ -501,23 +513,29 @@ impl Pairing {
                 else {
                     return None;
                 };
-                let p = *self.by_location.get(other)?;
-                (i < p).then_some((i, p))
+                // Each pair once, from the half whose location sorts first.
+                (node.location < *other).then(|| (node.location.clone(), other.clone()))
             })
             .collect();
 
         for (a, b) in controller_pairs {
-            let (a, b) = (&self.nodes[a], &self.nodes[b]);
+            let (Some(a), Some(b)) = (self.node(&a), self.node(&b)) else {
+                continue;
+            };
+            // The tell: one root with a single port, the other with several.
             let (small, large, ports) = match (a.nports, b.nports) {
                 (Some(1), Some(n)) if n > 1 => (a, b, n),
                 (Some(n), Some(1)) if n > 1 => (b, a, n),
                 _ => continue,
             };
+            // Whatever hangs on that single port is the stand-in candidate.
             let hub_location = child_location(&small.location, small.bus, 1);
-            let Some(&h) = self.by_location.get(&hub_location) else {
+            let Some(hub) = self.node(&hub_location) else {
                 continue;
             };
-            let hub = &self.nodes[h];
+            // It must fan the small side out to the large root: not spoken
+            // for already, as many ports as the large root, on the opposite
+            // side of the receptacles (opposite speed).
             if self.is_settled(&hub_location)
                 || hub.nports != Some(ports)
                 || hub.is_super_speed() == large.is_super_speed()
@@ -530,6 +548,8 @@ impl Pairing {
             {
                 continue;
             }
+            // Pair the stand-in with the large root, and mark the small root
+            // as spoken for: it pairs with nothing itself.
             let evidence = Evidence::Expansion {
                 root: small.location.clone(),
                 ports,
@@ -548,26 +568,36 @@ impl Pairing {
 
     /// Rule 4: same port number of hubs already paired.
     fn pair_by_descent(&mut self) {
+        // Indexed, not iterated: `link` at the end needs `&mut self`. Nodes
+        // are sorted parents first, so a parent's pair is settled before its
+        // children are looked at.
         for i in 0..self.nodes.len() {
             let node = &self.nodes[i];
+            // Only unsettled USB 3.x hubs below a root have a half to find.
             if node.is_root() || self.is_settled(&node.location) || !node.may_have_other_half() {
                 continue;
             }
+            // Split the location into the parent hub and the port on it.
             let Some((&port, parent_path)) = node.path.split_last() else {
                 continue;
             };
             let parent = sysfs_location(node.bus, parent_path);
+            // The parent's other half; without one, nothing to descend from.
             let Some(partner) = self.other_half(&parent) else {
                 continue;
             };
-            let Some(&p) = self.by_location.get(partner) else {
+            // The same port number on the partner is where the other half
+            // must sit (§10.3.3).
+            let Some(partner_bus) = self.node(partner).map(|p| p.bus) else {
                 continue;
             };
-            let candidate = child_location(partner, self.nodes[p].bus, port);
-            let Some(&c) = self.by_location.get(&candidate) else {
+            let candidate = child_location(partner, partner_bus, port);
+            let Some(candidate_node) = self.node(&candidate) else {
                 continue;
             };
-            if self.is_settled(&candidate) || !node.matches(&self.nodes[c]) {
+            // Reject rather than mis-pair: the candidate must be free and
+            // look like the other half of the same chip.
+            if self.is_settled(&candidate) || !node.matches(candidate_node) {
                 continue;
             }
             let location = node.location.clone();
@@ -589,8 +619,8 @@ impl Pairing {
             Some(Status::Paired { other, evidence }) => Verdict::Paired { other, evidence },
             Some(Status::StoodInFor { other, via }) => Verdict::StoodInFor { other, via },
             Some(Status::DeclaredAlone) => Verdict::DeclaredAlone,
-            None => match self.by_location.get(location) {
-                Some(&i) if self.nodes[i].may_have_other_half() => Verdict::Unpaired,
+            None => match self.node(location) {
+                Some(node) if node.may_have_other_half() => Verdict::Unpaired,
                 Some(_) => Verdict::Usb2Hub,
                 None => Verdict::Unknown,
             },
