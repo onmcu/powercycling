@@ -173,6 +173,11 @@ pub struct HubPairs {
 }
 
 impl HubPairs {
+    /// Construct from a Vec of `pairs` and a Vec of hubs that are `alone`
+    pub fn from(pairs: Vec<(String, String)>, alone: Vec<String>) -> Self {
+        Self { pairs, alone }
+    }
+
     /// No declared pairs.
     #[must_use]
     pub const fn none() -> Self {
