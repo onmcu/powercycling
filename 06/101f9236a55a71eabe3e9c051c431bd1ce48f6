@@ -1,0 +1,14 @@
+Cargo.toml
+  h_2e4fad1f0ddac3 17-18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "06101f9236a55a71eabe3e9c051c431bd1ce48f6",
+  "prompts": {},
+  "humans": {
+    "h_2e4fad1f0ddac3": {
+      "author": "JuliDi <julian@systemscape.de>"
+    }
+  }
+}
