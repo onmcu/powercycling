@@ -3,11 +3,14 @@
 use rusb::constants::{
     LIBUSB_CLASS_HUB, LIBUSB_DT_HUB, LIBUSB_DT_SUPERSPEED_HUB, LIBUSB_REQUEST_GET_DESCRIPTOR,
 };
-use rusb::{DeviceHandle, Direction, GlobalContext, Recipient, RequestType, Version, request_type};
+use rusb::{
+    DeviceHandle, DeviceList, Direction, GlobalContext, Recipient, RequestType, Version,
+    request_type,
+};
 use std::path::PathBuf;
 
 use crate::error::{Error, Result};
-use crate::sysfs::{SYSFS_USB, sysfs_location};
+use crate::sysfs::{SYSFS_USB, device_location};
 use crate::{Device, TIMEOUT};
 
 /// Logical Power Switching Mode mask and its per-port value, from
@@ -15,23 +18,37 @@ use crate::{Device, TIMEOUT};
 const HUB_CHAR_LPSM: u8 = 0x03;
 const HUB_CHAR_INDV_PORT_LPSM: u8 = 0x01;
 
+/// Shortest hub descriptor that can be read: the USB 2.0 one for up to seven
+/// ports (§11.23.2.1). The `SuperSpeed` one is a fixed 12 bytes (USB 3.2
+/// §10.15.2.1).
+const HUB_DESC_MIN_LEN: usize = 9;
+
 /// A hub declaring at least this may be the USB 2.0 half of a USB 3.x
-/// receptacle. One declaring USB 2.0 has no SuperSpeed half.
-const USB_BOS: Version = Version(2, 1, 0);
-/// A hub declaring at least this is a SuperSpeed hub.
-pub(crate) const USB_SS: Version = Version(3, 0, 0);
+/// receptacle. One declaring USB 2.0 has no `SuperSpeed` half.
+pub const USB_BOS: Version = Version(2, 1, 0);
+/// A hub declaring at least this is a `SuperSpeed` hub.
+pub const USB_SS: Version = Version(3, 0, 0);
 
 /// One logical hub. A USB 3.x receptacle is fed by two of these.
 #[derive(Clone)]
-pub(crate) struct Hub {
-    pub(crate) dev: Device,
+pub struct Hub {
+    /// Device on the global libusb context
+    pub dev: Device,
     /// sysfs location, e.g. `2-1.2`, or `usb2` for a root hub.
-    pub(crate) location: String,
-    pub(crate) bus: u8,
-    pub(crate) path: Vec<u8>,
-    pub(crate) version: Version,
-    pub(crate) nports: u8,
-    pub(crate) per_port_power: bool,
+    pub location: String,
+    /// Bus number this hub is connected to
+    pub bus: u8,
+    /// Port path from the root hub, e.g. `[1, 2]` for `2-1.2`; empty for a
+    /// root hub.
+    pub path: Vec<u8>,
+    /// USB version
+    pub version: Version,
+    /// Vendor ID. Both halves of a USB 3.x hub carry the same one.
+    pub vid: u16,
+    /// `bNbrPorts`, the number of ports this hub has
+    pub nports: u8,
+    /// Whether the hub supports PPPS
+    pub per_port_power: bool,
 }
 
 impl Hub {
@@ -39,36 +56,65 @@ impl Hub {
     ///
     /// Requires usbfs access: whether a hub switches power per port is only in
     /// the hub descriptor, not in sysfs.
-    pub(crate) fn open(dev: Device, location: &str) -> Result<Hub> {
-        let unreadable = || Error::HubUnreadable {
-            location: location.to_string(),
+    ///
+    /// # Errors
+    ///
+    /// [`Error::HubUnreadable`] if the hub could not be opened or would not
+    /// answer.
+    pub fn open(dev: Device) -> Result<Self> {
+        let location = device_location(&dev);
+        let unreadable = |source| Error::HubUnreadable {
+            location: location.clone(),
+            source,
         };
-        let desc = dev.device_descriptor().map_err(|_| unreadable())?;
+
+        let desc = dev.device_descriptor().map_err(unreadable)?;
+        let path = dev.port_numbers().map_err(unreadable)?;
+
         // The declared spec version, not the negotiated link speed: a
         // SuperSpeed hub plugged into a USB 2.0 port is still the SS half.
         let version = desc.usb_version();
-        let handle = dev.open().map_err(|_| unreadable())?;
-        let (nports, per_port_power) =
-            read_hub_descriptor(&handle, version >= USB_SS).map_err(|_| unreadable())?;
 
-        Ok(Hub {
+        let handle = dev.open().map_err(unreadable)?;
+        let (nports, per_port_power) =
+            read_hub_descriptor(&handle, version >= USB_SS).map_err(unreadable)?;
+
+        Ok(Self {
             bus: dev.bus_number(),
-            path: dev.port_numbers().unwrap_or_default(),
-            location: location.to_string(),
-            dev,
+            location,
+            path,
             version,
+            vid: desc.vendor_id(),
+            dev,
             nports,
             per_port_power,
         })
     }
 
-    pub(crate) fn is_super_speed(&self) -> bool {
+    /// Whether this is the bus's root hub, i.e. nothing above it in the tree.
+    /// Its USB port path is empty, so sysfs names it `usb<bus>` instead of
+    /// `<bus>-<port path>`, which every location built from it must account for.
+    pub const fn is_root_hub(&self) -> bool {
+        self.path.is_empty()
+    }
+
+    /// How many hubs are above this one; 0 for a root hub.
+    pub const fn depth(&self) -> usize {
+        self.path.len()
+    }
+
+    /// Whether this is at least a USB 3 hub
+    pub fn is_super_speed(&self) -> bool {
         self.version >= USB_SS
     }
 
-    /// Whether this hub can be one half of a USB 3.x receptacle.
-    pub(crate) fn may_have_peer(&self) -> bool {
-        self.version >= USB_BOS
+    /// The side its other half would be on: `USB 2.0` or `SuperSpeed`.
+    pub fn other_side(&self) -> &'static str {
+        if self.is_super_speed() {
+            "USB 2.0"
+        } else {
+            "SuperSpeed"
+        }
     }
 
     /// sysfs directory of one downstream port, e.g.
@@ -76,10 +122,10 @@ impl Hub {
     ///
     /// The config number comes from the cached descriptor, so this needs no
     /// usbfs handle.
-    pub(crate) fn port_dir(&self, port: u8) -> rusb::Result<PathBuf> {
+    pub fn port_dir(&self, port: u8) -> rusb::Result<PathBuf> {
         let cfg = self.dev.active_config_descriptor()?.number();
         // A root hub's interface directory is `<bus>-0:<cfg>.0`, not `usb<bus>:...`.
-        let iface = if self.path.is_empty() {
+        let iface = if self.is_root_hub() {
             format!("{}-0", self.bus)
         } else {
             self.location.clone()
@@ -112,42 +158,82 @@ fn read_hub_descriptor(
         &mut buf,
         TIMEOUT,
     )?;
-    if n < 9 {
-        return Err(rusb::Error::Io);
+    parse_hub_descriptor(&buf[..n]).ok_or(rusb::Error::Io)
+}
+
+/// `bNbrPorts` and whether the hub switches power per port, from the leading
+/// bytes of a hub descriptor. Both descriptor types share the layout of these
+/// fields (USB 2.0 §11.23.2.1, USB 3.2 §10.15.2.1).
+///
+/// `None` if the descriptor is too short to hold them.
+const fn parse_hub_descriptor(desc: &[u8]) -> Option<(u8, bool)> {
+    if desc.len() < HUB_DESC_MIN_LEN {
+        return None;
     }
 
-    let nports = buf[2];
-    let lpsm = buf[3] & HUB_CHAR_LPSM;
+    // bNbrPorts is at offset 2, wHubCharacteristics at offset 3, with the
+    // Logical Power Switching Mode in its two lowest bits:
+    // 00 ganged, 01 per port, 1x reserved (no switching, USB 1.0 hubs).
+    let nports = desc[2];
+    let lpsm = desc[3] & HUB_CHAR_LPSM;
+
     // With one port, ganged switching and per-port switching are the same act.
     let per_port_power = lpsm == HUB_CHAR_INDV_PORT_LPSM || (lpsm == 0 && nports == 1);
-    Ok((nports, per_port_power))
+    Some((nports, per_port_power))
 }
 
-/// Every enumerated hub with its sysfs location. Reads cached descriptors only,
-/// opens nothing.
-pub(crate) fn all_hubs() -> rusb::Result<Vec<(Device, String)>> {
-    Ok(rusb::devices()?
-        .iter()
-        .filter(|dev| {
-            dev.device_descriptor()
-                .is_ok_and(|d| d.class_code() == LIBUSB_CLASS_HUB)
-        })
-        .map(|dev| {
-            let loc = sysfs_location(dev.bus_number(), &dev.port_numbers().unwrap_or_default());
-            (dev, loc)
-        })
-        .collect())
+/// Whether `dev` is a hub, by device class. An unreadable descriptor is not.
+pub fn is_hub(dev: &Device) -> bool {
+    dev.device_descriptor()
+        .is_ok_and(|d| d.class_code() == LIBUSB_CLASS_HUB)
 }
 
-/// Open the hub at `location`.
-pub(crate) fn open_hub_at(hubs: &[(Device, String)], location: &str) -> Result<Hub> {
-    let (dev, _) =
-        hubs.iter()
-            .find(|(_, l)| l == location)
-            .ok_or_else(|| Error::HubUnreadable {
-                location: location.to_string(),
-            })?;
-    Hub::open(dev.clone(), location)
+/// Every hub enumerated on the bus, unopened. Every entry has the hub device
+/// class.
+pub struct Hubs(Vec<Device>);
+
+impl Hubs {
+    /// Enumerate every hub. Reads cached descriptors only, opens nothing.
+    ///
+    /// # Errors
+    ///
+    /// Whatever enumerating the bus returns.
+    pub fn enumerate() -> rusb::Result<Self> {
+        Ok(Self::from_devices(&rusb::devices()?))
+    }
+
+    /// The hubs among an already enumerated bus.
+    pub fn from_devices(devices: &DeviceList<GlobalContext>) -> Self {
+        Self(devices.iter().filter(is_hub).collect())
+    }
+
+    /// Open the hub at `location`.
+    ///
+    /// `location` is a sysfs location, e.g. `2-1.2` or `usb2`, as produced by
+    /// [`sysfs_location`](crate::sysfs::sysfs_location) or
+    /// [`device_location`]
+    ///
+    /// # Errors
+    ///
+    /// [`Error::HubMissing`] if no hub sits at `location`, which means the
+    /// topology moved under the search, or [`Error::HubUnreadable`] if the hub
+    /// is there but will not open.
+    pub fn open_at(&self, location: &str) -> Result<Hub> {
+        let dev = self.device_at(location).ok_or_else(|| Error::HubMissing {
+            location: location.to_string(),
+        })?;
+        Hub::open(dev.clone())
+    }
+
+    /// The hub at `location`, unopened, if one is enumerated there.
+    pub fn device_at(&self, location: &str) -> Option<&Device> {
+        self.0.iter().find(|dev| device_location(dev) == location)
+    }
+
+    /// The hubs, still unopened.
+    pub fn iter(&self) -> impl Iterator<Item = &Device> {
+        self.0.iter()
+    }
 }
 
 #[cfg(test)]
@@ -163,5 +249,73 @@ mod tests {
         // Declared spec version, so 3.2 still counts as SuperSpeed.
         assert!(Version(3, 0, 0) >= USB_SS);
         assert!(Version(3, 2, 0) >= USB_SS);
+    }
+
+    /// A USB 2.0 hub descriptor for `nports` ports with the given
+    /// `wHubCharacteristics` low byte, as a hub with up to seven ports sends
+    /// it: 7 fixed bytes plus one byte each of `DeviceRemovable` and
+    /// `PortPwrCtrlMask`.
+    fn usb2_desc(nports: u8, characteristics: u8) -> [u8; 9] {
+        [
+            9,
+            LIBUSB_DT_HUB,
+            nports,
+            characteristics,
+            0x00,
+            50,
+            0,
+            0x00,
+            0xff,
+        ]
+    }
+
+    #[test]
+    fn per_port_switching_is_lpsm_01() {
+        assert_eq!(parse_hub_descriptor(&usb2_desc(4, 0b01)), Some((4, true)));
+        // Other characteristics bits (overcurrent, TT think time, indicators)
+        // do not matter.
+        assert_eq!(parse_hub_descriptor(&usb2_desc(4, 0xfd)), Some((4, true)));
+    }
+
+    #[test]
+    fn ganged_and_unswitched_hubs_are_not_per_port() {
+        assert_eq!(parse_hub_descriptor(&usb2_desc(4, 0b00)), Some((4, false)));
+        assert_eq!(parse_hub_descriptor(&usb2_desc(4, 0b10)), Some((4, false)));
+        assert_eq!(parse_hub_descriptor(&usb2_desc(4, 0b11)), Some((4, false)));
+    }
+
+    #[test]
+    fn single_port_ganged_hub_counts_as_per_port() {
+        assert_eq!(parse_hub_descriptor(&usb2_desc(1, 0b00)), Some((1, true)));
+        // Only ganged: a hub without power switching still cannot switch.
+        assert_eq!(parse_hub_descriptor(&usb2_desc(1, 0b10)), Some((1, false)));
+    }
+
+    #[test]
+    fn super_speed_descriptor_has_the_same_layout() {
+        // bLength, bDescriptorType, bNbrPorts, wHubCharacteristics,
+        // bPwrOn2PwrGood, bHubContrCurrent, bHubHdrDecLat, wHubDelay,
+        // DeviceRemovable (USB 3.2 §10.15.2.1).
+        let desc = [
+            12,
+            LIBUSB_DT_SUPERSPEED_HUB,
+            4,
+            0x09,
+            0x00,
+            50,
+            0,
+            0,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+        ];
+        assert_eq!(parse_hub_descriptor(&desc), Some((4, true)));
+    }
+
+    #[test]
+    fn short_replies_are_rejected() {
+        assert_eq!(parse_hub_descriptor(&[]), None);
+        assert_eq!(parse_hub_descriptor(&usb2_desc(4, 0b01)[..8]), None);
     }
 }

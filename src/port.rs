@@ -1,15 +1,15 @@
 //! One downstream hub port, and the two ways to switch its power.
 
-use rusb::constants::{LIBUSB_REQUEST_CLEAR_FEATURE, LIBUSB_REQUEST_SET_FEATURE};
+use rusb::constants::{LIBUSB_CLASS_HUB, LIBUSB_REQUEST_CLEAR_FEATURE, LIBUSB_REQUEST_SET_FEATURE};
 use rusb::{DeviceHandle, Direction, GlobalContext, Recipient, RequestType, request_type};
 use std::path::{Path, PathBuf};
 
 use crate::TIMEOUT;
 use crate::error::{Error, Result};
 use crate::hub::Hub;
-use crate::sysfs::{SYSFS_USB, split_port_dir};
+use crate::sysfs::{SYSFS_USB, child_location, read_device_class};
 
-/// `PORT_POWER` feature selector (USB 2.0 §11.24.2).
+/// `PORT_POWER` feature selector (USB 2.0 §11.24.2, Table 11-17).
 const PORT_POWER: u16 = 8;
 
 /// One downstream port of one logical hub.
@@ -25,30 +25,44 @@ pub struct HubPort {
 impl HubPort {
     pub(crate) fn new(hub: Hub, port: u8) -> Result<Self> {
         let dir = hub.port_dir(port)?;
-        Ok(HubPort { hub, port, dir })
+        Ok(Self { hub, port, dir })
     }
 
-    /// Human-readable identifier, e.g. `2-1.2.3 port 4`.
-    #[must_use]
-    pub fn location(&self) -> String {
-        format!("{} port {}", self.hub.location, self.port)
-    }
-
-    /// Whether this is the SuperSpeed half of a USB 3.x receptacle.
+    /// Whether this is the `SuperSpeed` half of a USB 3.x receptacle.
     #[must_use]
     pub fn is_super_speed(&self) -> bool {
         self.hub.is_super_speed()
+    }
+
+    /// sysfs location of the hub this port belongs to, e.g. `2-1.2.3`.
+    #[must_use]
+    pub fn hub_location(&self) -> &str {
+        &self.hub.location
     }
 
     /// sysfs location a device plugged into this port would have, e.g.
     /// `2-1.2.3.4`. Everything at or below it loses power with the port.
     #[must_use]
     pub fn child_location(&self) -> String {
-        if self.hub.path.is_empty() {
-            format!("{}-{}", self.hub.bus, self.port)
-        } else {
-            format!("{}.{}", self.hub.location, self.port)
-        }
+        child_location(&self.hub.location, self.hub.bus, self.port)
+    }
+
+    /// Whether this port can be held down alongside `primary` without
+    /// stranding anything: it is empty, or both ports hold a hub - the two
+    /// halves of one hub sit on one receptacle (USB 3.2 §10.1).
+    pub(crate) fn is_holdable_for(&self, primary: &Self) -> bool {
+        !self.is_occupied() || (primary.holds_hub() && self.holds_hub())
+    }
+
+    /// The hub this port belongs to.
+    pub(crate) const fn hub(&self) -> &Hub {
+        &self.hub
+    }
+
+    /// The port number on its hub.
+    #[must_use]
+    pub const fn port(&self) -> u8 {
+        self.port
     }
 
     /// Whether something is plugged into this port.
@@ -56,12 +70,12 @@ impl HubPort {
         Path::new(SYSFS_USB).join(self.child_location()).exists()
     }
 
-    /// The other logical port of the same receptacle, if the kernel published a
-    /// `peer` link for it.
-    pub(crate) fn peer(&self) -> Option<(String, u8)> {
-        let target = std::fs::read_link(self.dir.join("peer")).ok()?;
-        let (loc, port) = split_port_dir(target.file_name()?.to_str()?)?;
-        Some((loc.to_string(), port))
+    /// Whether what is plugged into this port is a hub.
+    ///
+    /// Read from sysfs, so an empty port and an unreadable class both read
+    /// `false`.
+    pub(crate) fn holds_hub(&self) -> bool {
+        read_device_class(&self.child_location()) == Some(LIBUSB_CLASS_HUB)
     }
 
     /// The port's `disable` attribute, if this kernel exposes one (6.0+).
@@ -72,7 +86,7 @@ impl HubPort {
 
     fn switch_failed(&self, usbfs: rusb::Error, sysfs: Option<std::io::Error>) -> Error {
         Error::SwitchFailed {
-            port: self.location(),
+            port: self.to_string(),
             sysfs,
             usbfs,
         }
@@ -104,32 +118,6 @@ impl HubPort {
     }
 }
 
-/// Switch several ports over usbfs, opening each hub once.
-///
-/// usbfs rather than the sysfs `disable` attribute because `disable_store()`
-/// sleeps twice the hub's power-on-good delay on every write, and one open
-/// dominates the control transfers of the four-odd ports a hub contributes.
-///
-/// `ports` must be grouped by hub, which is how [`crate::PowerPorts::find`] builds them.
-///
-/// # Errors
-///
-/// [`Error::SwitchFailed`] for the first port that could not be switched.
-pub(crate) fn usbfs_set_power(ports: &[&HubPort], on: bool) -> Result<()> {
-    for group in ports.chunk_by(|a, b| a.hub.location == b.hub.location) {
-        let [first, ..] = group else { continue };
-        let handle = first
-            .hub
-            .dev
-            .open()
-            .map_err(|e| first.switch_failed(e, None))?;
-        for p in group {
-            write_port_power(&handle, p.port, on).map_err(|e| p.switch_failed(e, None))?;
-        }
-    }
-    Ok(())
-}
-
 /// Send `SetPortFeature`/`ClearPortFeature(PORT_POWER)` for one port.
 fn write_port_power(handle: &DeviceHandle<GlobalContext>, port: u8, on: bool) -> rusb::Result<()> {
     // bmRequestType 0x23: host->device, class, recipient = other (a port).
@@ -143,12 +131,21 @@ fn write_port_power(handle: &DeviceHandle<GlobalContext>, port: u8, on: bool) ->
     Ok(())
 }
 
+/// Human-readable identifier, e.g. `2-1.2.3 port 4`.
+///
+/// For messages only. It is not a sysfs location and no path can be built
+/// from it; [`Self::child_location`] is the sysfs one.
+impl std::fmt::Display for HubPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} port {}", self.hub.location, self.port)
+    }
+}
+
 impl std::fmt::Debug for HubPort {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{} ({})",
-            self.location(),
+            "{self} ({})",
             if self.is_super_speed() { "SS" } else { "HS" }
         )
     }

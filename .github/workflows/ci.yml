@@ -13,7 +13,7 @@ jobs:
     # The crate is Linux-only; it fails to compile anywhere else by design.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -33,3 +33,8 @@ jobs:
 
       - name: Test
         run: cargo test
+
+      - name: Docs
+        run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings

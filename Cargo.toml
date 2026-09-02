@@ -1,15 +1,28 @@
 [package]
 name = "powercycling"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
-rust-version = "1.85"
-description = "Power-cycle a USB device by VID:PID:serial via hub per-port power switching (PPPS)"
+description = "Power-cycle a USB device by VID:PID and serial via hub per-port power switching (PPPS)"
 repository = "https://github.com/onmcu/powercycling"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 keywords = ["usb", "hub", "ppps", "power-cycle", "hil"]
 categories = ["hardware-support", "os::linux-apis"]
-exclude = ["**/*.bak*"]
+authors = ["Julian Dickert <julian@onmcu.com>"]
+
+[package.metadata.docs.rs]
+# Linux-only crate; the docs are the same on every Linux target.
+targets = ["x86_64-unknown-linux-gnu"]
 
 [dependencies]
-rusb = "0.9.4"
+rusb = { version = "0.9.4", default-features = false }
+thiserror = { version = "2.0.20", default-features = false }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "deny"
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
