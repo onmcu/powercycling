@@ -79,37 +79,40 @@ impl PowerPorts {
     }
 
     /// Same as [`Self::find_above`], but refuses unless the hub `levels` hubs
-    /// above `device` carries the identity `hub`.
+    /// above `device` carries one of the identities in `hubs`. An empty
+    /// `hubs` matches no hub and always refuses.
     ///
     /// For a device that may or may not sit on a carrier board: this cuts the
     /// carrier's hub when there is one, and [`Error::HubMismatch`] says there
     /// is not - fall back to [`Self::find`] to cycle the device alone, or
-    /// leave everything untouched.
+    /// leave everything untouched. List several identities when carrier
+    /// revisions use different hubs.
     ///
-    /// `hub` is compared against the half of the hub the device enumerates
+    /// `hubs` is compared against the half of the hub the device enumerates
     /// behind; for a USB 3.x hub that is usually the USB 2.0 half, whose
-    /// `vid:pid` differs from the `SuperSpeed` half's. A `hub` without a serial
-    /// matches any serial.
+    /// `vid:pid` differs from the `SuperSpeed` half's. An identity without a
+    /// serial matches any serial.
     ///
     /// # Errors
     ///
     /// As [`Self::find_above`], plus [`Error::HubMismatch`] if the hub
-    /// `levels` above the device is not `hub`.
+    /// `levels` above the device is not in `hubs`.
     pub fn find_above_matching(
         device: &DeviceId,
         levels: u8,
-        hub: &DeviceId,
+        hubs: &[DeviceId],
         pairs: &HubPairs,
     ) -> Result<Self> {
-        Self::find_ports(device, levels, Some(hub), pairs)
+        Self::find_ports(device, levels, Some(hubs), pairs)
     }
 
-    /// Shared body of the `find*` constructors. `expected`, if given, is the
-    /// identity the device `levels` hubs above must carry.
+    /// Shared body of the `find*` constructors. `expected`, if given, lists
+    /// the identities the device `levels` hubs above may carry; `None` skips
+    /// the check entirely, while an empty list refuses everything.
     fn find_ports(
         device: &DeviceId,
         levels: u8,
-        expected: Option<&DeviceId>,
+        expected: Option<&[DeviceId]>,
         pairs: &HubPairs,
     ) -> Result<Self> {
         // Obtain information about where the device is connected
@@ -138,12 +141,12 @@ impl PowerPorts {
                     .get_parent()
                     .expect("`keep > 0` puts the target below the root hub");
             }
-            if !expected.matches(&target) {
+            if !expected.iter().any(|e| e.matches(&target)) {
                 return Err(Error::HubMismatch {
                     device: sysfs_location(bus, &path),
                     hub: sysfs_location(bus, &path[..keep]),
                     found: DeviceId::from_device(&target).ok(),
-                    expected: expected.clone(),
+                    expected: expected.to_vec(),
                 });
             }
         }
