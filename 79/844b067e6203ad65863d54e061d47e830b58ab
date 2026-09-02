@@ -1,0 +1,14 @@
+src/pairing.rs
+  h_2e4fad1f0ddac3 177-178
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "79844b067e6203ad65863d54e061d47e830b58ab",
+  "prompts": {},
+  "humans": {
+    "h_2e4fad1f0ddac3": {
+      "author": "JuliDi <julian@systemscape.de>"
+    }
+  }
+}
