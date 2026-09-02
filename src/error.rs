@@ -70,6 +70,20 @@ pub enum Error {
         /// How many levels up were asked for.
         levels: u8,
     },
+    /// The hub at the requested level above the device does not have the
+    /// requested `DeviceId`.
+    #[error("hub {hub}{} above {device} is not the expected {expected}",
+        hub_id_hint(.found.as_ref()))]
+    HubMismatch {
+        /// sysfs location of the device, e.g. `2-1.2.3.4`.
+        device: String,
+        /// sysfs location of the hub that was found, e.g. `2-1.2`.
+        hub: String,
+        /// That hub's identity, if its descriptor could be read.
+        found: Option<DeviceId>,
+        /// The identity that was required.
+        expected: DeviceId,
+    },
     /// No hub is enumerated at this sysfs location. The bus topology changed
     /// during the search, or a declared pair names a hub that is not there.
     #[error(
@@ -286,6 +300,20 @@ mod tests {
         }
         .to_string();
         assert!(without.starts_with("2-1.2.3.4 is behind hub 2-1.2.3, "));
+    }
+
+    #[test]
+    fn hub_mismatch_names_both_identities() {
+        let mismatch = Error::HubMismatch {
+            device: "2-1.2.3".to_string(),
+            hub: "2-1.2".to_string(),
+            found: Some(DeviceId::new(0x0bda, 0x5411, None)),
+            expected: DeviceId::new(0x0424, 0x2514, None),
+        };
+        assert_eq!(
+            mismatch.to_string(),
+            "hub 2-1.2 (0bda:5411) above 2-1.2.3 is not the expected 0424:2514"
+        );
     }
 
     #[test]

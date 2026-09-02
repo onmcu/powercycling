@@ -75,6 +75,43 @@ impl PowerPorts {
     /// As [`Self::find`], plus [`Error::NothingAbove`] if there are fewer
     /// than `levels` hubs between the device and the root hub.
     pub fn find_above(device: &DeviceId, levels: u8, pairs: &HubPairs) -> Result<Self> {
+        Self::find_ports(device, levels, None, pairs)
+    }
+
+    /// Same as [`Self::find_above`], but refuses unless the hub `levels` hubs
+    /// above `device` carries the identity `hub`.
+    ///
+    /// For a device that may or may not sit on a carrier board: this cuts the
+    /// carrier's hub when there is one, and [`Error::HubMismatch`] says there
+    /// is not - fall back to [`Self::find`] to cycle the device alone, or
+    /// leave everything untouched.
+    ///
+    /// `hub` is compared against the half of the hub the device enumerates
+    /// behind; for a USB 3.x hub that is usually the USB 2.0 half, whose
+    /// `vid:pid` differs from the `SuperSpeed` half's. A `hub` without a serial
+    /// matches any serial.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::find_above`], plus [`Error::HubMismatch`] if the hub
+    /// `levels` above the device is not `hub`.
+    pub fn find_above_matching(
+        device: &DeviceId,
+        levels: u8,
+        hub: &DeviceId,
+        pairs: &HubPairs,
+    ) -> Result<Self> {
+        Self::find_ports(device, levels, Some(hub), pairs)
+    }
+
+    /// Shared body of the `find*` constructors. `expected`, if given, is the
+    /// identity the device `levels` hubs above must carry.
+    fn find_ports(
+        device: &DeviceId,
+        levels: u8,
+        expected: Option<&DeviceId>,
+        pairs: &HubPairs,
+    ) -> Result<Self> {
         // Obtain information about where the device is connected
         let dev = find_device(device)?;
         let bus = dev.bus_number();
@@ -90,6 +127,26 @@ impl PowerPorts {
                 device: sysfs_location(bus, &path),
                 levels,
             })?;
+
+        // Refuse unless the target carries the expected identity. Checked on
+        // the device tree the path came from, so the identity that matched is
+        // the identity that gets cut.
+        if let Some(expected) = expected {
+            let mut target = dev;
+            for _ in 0..levels {
+                target = target
+                    .get_parent()
+                    .expect("`keep > 0` puts the target below the root hub");
+            }
+            if !expected.matches(&target) {
+                return Err(Error::HubMismatch {
+                    device: sysfs_location(bus, &path),
+                    hub: sysfs_location(bus, &path[..keep]),
+                    found: DeviceId::from_device(&target).ok(),
+                    expected: expected.clone(),
+                });
+            }
+        }
         path.truncate(keep);
 
         let hubs = Hubs::enumerate()?;
