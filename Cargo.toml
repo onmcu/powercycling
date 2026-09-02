@@ -2,12 +2,13 @@
 name = "powercycling"
 version = "0.0.1"
 edition = "2024"
-description = "Power-cycle a USB device by VID:PID:serial via hub per-port power switching (PPPS)"
+description = "Power-cycle a USB device by VID:PID and serial via hub per-port power switching (PPPS)"
 repository = "https://github.com/onmcu/powercycling"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 keywords = ["usb", "hub", "ppps", "power-cycle", "hil"]
 categories = ["hardware-support", "os::linux-apis"]
+authors = ["Julian Dickert <julian@onmcu.com>"]
 
 [package.metadata.docs.rs]
 # Linux-only crate; the docs are the same on every Linux target.

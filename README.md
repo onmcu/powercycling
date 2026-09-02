@@ -5,17 +5,18 @@ and serial number, by switching hub port power (PPPS). Linux only.
 
 Built for hardware-in-the-loop rigs, where a hanging MCU devboard needs its VBUS
 cut rather than only the USB link reset. The crate cuts exactly the one port
-that feeds the device. For USB 3.x hubs, it also holds the other half of the
-receptacle down with it.
+that feeds the device, unless explicitly told otherwise.
+(For USB 3.x hubs, it _must_ also hold the other half of the receptacle down with it.)
 
-When it cannot be ensured that only your device loses power, an error with
+When it cannot be ensured that only the specified device loses power, an error with
 precise instructions is returned.
 
 ## Requirements
 
-- **Hardware:** the device hangs off a hub that does per-port power switching
-  (PPPS). Most bare-board hubs do; many consumer hubs _claim_ it but do not
-  have the hardware (MOSFETs) to actually cut the power (`--verify` finds that out).
+- **Hardware:** a hub that does per-port power switching (PPPS).
+  Most bare-board hubs do; many consumer hubs _claim_ it but do not
+  have the hardware (MOSFETs) to actually cut the power (you can figure it out
+  with the `--verify` command of the CLI).
 - **Permissions:** switching a port needs write access to the port's sysfs
   `disable` attribute (kernel 6.0+) or the hub's usbfs node.
   Install uhubctl's [`52-usb.rules`](https://github.com/mvp/uhubctl/blob/master/udev/rules.d/52-usb.rules)
@@ -43,7 +44,7 @@ Each takes `--pairs-file <path>` for the machine's declared hub pairs; the
 first four also `--above <n>` to cycle the hub `n` levels above the device
 (e.g. a carrier board) with everything on it.
 
-Run `--verify` once per setup with a device that has a power LED:
+Run `--verify` once per physical USB-port with a device that has a power LED:
 `Ok` alone only proves the device left the bus, not that it lost power.
 
 | LED during `--verify` | meaning |
@@ -83,7 +84,8 @@ usually nothing. When, why and how is in the
 
 The approach, walking to a PPPS-capable hub and switching both halves of a
 USB 3.x receptacle, comes from [uhubctl](https://github.com/mvp/uhubctl) by
-Vadim Mikhailov, which is where this problem was solved first.
+Vadim Mikhailov, which is where this problem was solved first (to the best
+of our knowledge).
 
 ## License
 
