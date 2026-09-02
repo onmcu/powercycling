@@ -1,0 +1,16 @@
+src/error.rs
+  h_2e4fad1f0ddac3 73-86,305-318
+src/power.rs
+  h_2e4fad1f0ddac3 78-114,130-149
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "60e2923a2aa6337aa45aac3c75eb72c0ec576719",
+  "prompts": {},
+  "humans": {
+    "h_2e4fad1f0ddac3": {
+      "author": "JuliDi <julian@systemscape.de>"
+    }
+  }
+}
