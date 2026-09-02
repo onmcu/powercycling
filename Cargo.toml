@@ -1,6 +1,6 @@
 [package]
 name = "powercycling"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
 description = "Power-cycle a USB device by VID:PID:serial via hub per-port power switching (PPPS)"
 repository = "https://github.com/onmcu/powercycling"
